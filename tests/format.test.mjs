@@ -37,6 +37,7 @@ import {
     formatPanelPillLabel,
     formatRelativeUpdated,
     formatResetCountdown,
+    getActiveAccount,
     getBarFillRgba,
     getProviderAlertSeverity,
     getSeverityForUsedPercent,
@@ -1494,6 +1495,23 @@ function legacyEvaluateQuotaNotificationStep(
     return emitted;
 }
 
+function projectSummaryForComparison(summary) {
+    return {
+        maxUsedPercent: summary.maxUsedPercent,
+        severity: summary.severity,
+        fullText: summary.fullText,
+        pillsLength: summary.pills.length,
+        pills: summary.pills.map(p => ({
+            displayName: p.displayName,
+            iconName: p.iconName,
+            usedPercent: p.usedPercent,
+            displayPercent: p.displayPercent,
+            percentText: p.percentText,
+            severity: p.severity,
+        })),
+    };
+}
+
 describe('Active mode parity with legacy main implementation', () => {
     const NOW = 1_760_000_000;
     const WIN_1 = NOW + 172_800;
@@ -1747,23 +1765,6 @@ describe('Active mode parity with legacy main implementation', () => {
                     ],
                 },
             ],
-        };
-    }
-
-    function projectSummaryForComparison(summary) {
-        return {
-            maxUsedPercent: summary.maxUsedPercent,
-            severity: summary.severity,
-            fullText: summary.fullText,
-            pillsLength: summary.pills.length,
-            pills: summary.pills.map(p => ({
-                displayName: p.displayName,
-                iconName: p.iconName,
-                usedPercent: p.usedPercent,
-                displayPercent: p.displayPercent,
-                percentText: p.percentText,
-                severity: p.severity,
-            })),
         };
     }
 
