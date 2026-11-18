@@ -125,7 +125,14 @@ export const PROVIDER_BY_ID = Object.freeze(
 export const PANEL_MODES = Object.freeze([
     Object.freeze({id: 'icon', label: 'Minimal Icon'}),
     Object.freeze({id: 'compact-pills', label: 'Compact Pills'}),
+    Object.freeze({id: 'labeled-pills', label: 'Pills with text'}),
     Object.freeze({id: 'full-text', label: 'Full Text'}),
+]);
+
+export const PANEL_ACCOUNT_MODES = Object.freeze([
+    Object.freeze({id: 'active', label: 'Active account only'}),
+    Object.freeze({id: 'all', label: 'All accounts'}),
+    Object.freeze({id: 'selected', label: 'Selected accounts'}),
 ]);
 
 export const PANEL_BOXES = Object.freeze([
@@ -1292,70 +1299,121 @@ export function summarizeOverflowProviders(overflowProviders, expanded = false) 
 }
 
 /**
- * Formats a clean plain-text usage summary suitable for 1-click clipboard copying.
+ * Formats a plain-text usage summary for clipboard copy.
  *
  * @param {Array<object>} visibleProviders
  * @param {'used'|'remaining'} [metricMode='used']
  * @param {number} [nowEpoch]
+ * @param {{
+ *   mode?: 'active'|'all'|'selected',
+ *   accountMode?: 'active'|'all'|'selected',
+ *   panelAccountMode?: 'active'|'all'|'selected',
+ *   accountIds?: ReadonlyArray<string>,
+ *   panelAccountIds?: ReadonlyArray<string>
+ * }} [options]
  * @returns {string}
  */
 export function formatClipboardSummary(
     visibleProviders,
     metricMode = 'used',
-    nowEpoch = Math.floor(Date.now() / 1000)
+    nowEpoch = Math.floor(Date.now() / 1000),
+    options = {}
 ) {
+    let resolvedMetric = metricMode;
+    let resolvedNow = nowEpoch;
+    let resolvedOpts = options;
+
+    if (metricMode && typeof metricMode === 'object') {
+        resolvedOpts = metricMode;
+        resolvedMetric = resolvedOpts.metricMode ?? 'used';
+        resolvedNow = typeof resolvedOpts.nowEpoch === 'number'
+            ? resolvedOpts.nowEpoch
+            : Math.floor(Date.now() / 1000);
+    } else if (nowEpoch && typeof nowEpoch === 'object') {
+        resolvedOpts = nowEpoch;
+        resolvedNow = typeof resolvedOpts.nowEpoch === 'number'
+            ? resolvedOpts.nowEpoch
+            : Math.floor(Date.now() / 1000);
+    }
+
     const providers = Array.isArray(visibleProviders) ? visibleProviders.filter(Boolean) : [];
     if (providers.length === 0)
         return 'AI Agent Usage: No active AI agents detected';
 
-    const isRemaining = metricMode === 'remaining';
+    const mode = resolvedOpts?.mode ??
+        resolvedOpts?.accountMode ??
+        resolvedOpts?.panelAccountMode ??
+        'active';
+    const accountIds = resolvedOpts?.accountIds ??
+        resolvedOpts?.panelAccountIds ??
+        [];
+
+    const isRemaining = resolvedMetric === 'remaining';
     const modeSuffix = isRemaining ? 'left' : 'used';
     const lines = [`AI Agent Usage (${isRemaining ? '% remaining' : '% used'})`];
 
     for (const prov of providers) {
         const name = prov.display_name || PROVIDER_BY_ID[prov.id]?.displayName || prov.id || 'Agent';
         const activeAcc = getActiveAccount(prov);
-        const tier = prov.plan_badge || activeAcc?.plan_tier || '';
-        const head = tier ? `${name} (${tier})` : name;
 
-        if (activeAcc?.state === 'signed_out') {
-            lines.push(`- ${head}: Signed out`);
-            continue;
+        let targetAccounts;
+        if (mode === 'all' || mode === 'selected') {
+            const entries = buildPanelEntries([prov], {mode, accountIds});
+            if (entries.length > 0)
+                targetAccounts = entries.map(e => e.account);
+            else
+                targetAccounts = activeAcc ? [activeAcc] : [null];
+        } else {
+            targetAccounts = activeAcc ? [activeAcc] : [null];
         }
 
-        const buckets = Array.isArray(activeAcc?.buckets) ? activeAcc.buckets : [];
-        if (buckets.length > 0) {
-            const parts = buckets.map(b => {
-                const m = formatBucketMetric(b, metricMode);
-                const title = formatBucketDisplayLabel(b);
-                const reset = formatResetCountdown(b.resets_at_epoch, nowEpoch, {prefix: false});
+        const multiAccount = targetAccounts.length >= 2;
+
+        for (const acc of targetAccounts) {
+            const tier = acc?.plan_tier || (acc === activeAcc ? prov.plan_badge : '') || '';
+            const tag = multiAccount ? formatAccountShortTag(acc) : '';
+            const badgeParts = [tag, tier].filter(Boolean);
+            const head = badgeParts.length > 0 ? `${name} (${badgeParts.join(' · ')})` : name;
+
+            if (acc?.state === 'signed_out') {
+                lines.push(`- ${head}: Signed out`);
+                continue;
+            }
+
+            const buckets = Array.isArray(acc?.buckets) ? acc.buckets : [];
+            if (buckets.length > 0) {
+                const parts = buckets.map(b => {
+                    const m = formatBucketMetric(b, resolvedMetric);
+                    const title = formatBucketDisplayLabel(b);
+                    const reset = formatResetCountdown(b.resets_at_epoch, resolvedNow, {prefix: false});
+                    const resetSuffix = reset && reset !== 'now' ? ` (resets in ${reset})` : '';
+                    return `${title} ${m.percentText} ${modeSuffix}${resetSuffix}`;
+                });
+                const creditsNote = formatCompactAccountExtraNote(acc, Boolean(tier));
+                if (creditsNote)
+                    parts.push(creditsNote);
+                lines.push(`- ${head}: ${parts.join(' · ')}`);
+                continue;
+            }
+
+            if (acc === activeAcc && typeof prov.primary_used_percent === 'number') {
+                const m = formatBucketMetric({
+                    used_percent: prov.primary_used_percent,
+                    remaining_percent: prov.primary_remaining_percent,
+                }, resolvedMetric);
+                const reset = formatResetCountdown(prov.primary_reset_epoch, resolvedNow, {prefix: false});
                 const resetSuffix = reset && reset !== 'now' ? ` (resets in ${reset})` : '';
-                return `${title} ${m.percentText} ${modeSuffix}${resetSuffix}`;
-            });
-            const creditsNote = formatCompactAccountExtraNote(activeAcc, Boolean(tier));
-            if (creditsNote)
-                parts.push(creditsNote);
-            lines.push(`- ${head}: ${parts.join(' · ')}`);
-            continue;
-        }
+                lines.push(`- ${head}: ${m.percentText} ${modeSuffix}${resetSuffix}`);
+                continue;
+            }
 
-        if (typeof prov.primary_used_percent === 'number') {
-            const m = formatBucketMetric({
-                used_percent: prov.primary_used_percent,
-                remaining_percent: prov.primary_remaining_percent,
-            }, metricMode);
-            const reset = formatResetCountdown(prov.primary_reset_epoch, nowEpoch, {prefix: false});
-            const resetSuffix = reset && reset !== 'now' ? ` (resets in ${reset})` : '';
-            lines.push(`- ${head}: ${m.percentText} ${modeSuffix}${resetSuffix}`);
-            continue;
+            const fallback = formatCreditsSummary(acc?.credits) ||
+                acc?.extra_info ||
+                acc?.error ||
+                acc?.status_note ||
+                'Idle';
+            lines.push(`- ${head}: ${fallback}`);
         }
-
-        const fallback = formatCreditsSummary(activeAcc?.credits) ||
-            activeAcc?.extra_info ||
-            activeAcc?.error ||
-            activeAcc?.status_note ||
-            'Idle';
-        lines.push(`- ${head}: ${fallback}`);
     }
 
     return lines.join('\n');
@@ -1605,56 +1663,395 @@ export function sortProvidersByOrder(providers, orderIds = DEFAULT_PROVIDER_ORDE
 }
 
 /**
- * Computes top-bar summary data (severity, compact pills, and full-text label)
- * from the currently visible providers.
+ * Returns the short display name of a provider or panel entry.
+ *
+ * @param {object|null|undefined} entryOrProvider
+ * @returns {string}
+ */
+function getShortProviderName(entryOrProvider) {
+    if (!entryOrProvider || typeof entryOrProvider !== 'object')
+        return 'Agent';
+    if (
+        typeof entryOrProvider.providerShortName === 'string' &&
+        entryOrProvider.providerShortName.trim() !== ''
+    ) {
+        return entryOrProvider.providerShortName.trim();
+    }
+    const provId = entryOrProvider.providerId || entryOrProvider.id || '';
+    const rawName = String(
+        entryOrProvider.displayName ||
+        entryOrProvider.display_name ||
+        PROVIDER_BY_ID[provId]?.displayName ||
+        provId ||
+        'Agent'
+    );
+    return rawName
+        .replace(/^GitHub\s+/i, '')
+        .replace(/\s+CLI$/i, '')
+        .trim() || 'Agent';
+}
+
+/**
+ * Formats a short account tag (maximum 8 characters) from the account label or email prefix.
+ *
+ * @param {object|null|undefined} account
+ * @returns {string}
+ */
+export function formatAccountShortTag(account) {
+    if (!account || typeof account !== 'object')
+        return '';
+
+    let raw = typeof account.label === 'string' ? account.label.trim() : '';
+    if (!raw && typeof account.id === 'string') {
+        const idStr = account.id.trim();
+        const colonIdx = idStr.indexOf(':');
+        raw = colonIdx >= 0 ? idStr.slice(colonIdx + 1).trim() : idStr;
+    }
+    if (!raw)
+        return '';
+
+    const atIdx = raw.indexOf('@');
+    const base = atIdx > 0 ? raw.slice(0, atIdx).trim() : raw;
+    return base.slice(0, 8).trim();
+}
+
+/**
+ * Formats the pill text label for `labeled-pills` mode.
+ * Returns the account tag when the provider has 2 or more entries, else the short provider name.
+ *
+ * @param {object|null|undefined} entry
+ * @param {Array<object>|number|null|undefined} [entriesForProvider]
+ * @returns {string}
+ */
+export function formatPanelPillLabel(entry, entriesForProvider) {
+    if (!entry || typeof entry !== 'object')
+        return '';
+
+    let count = 1;
+    if (typeof entriesForProvider === 'number' && Number.isFinite(entriesForProvider)) {
+        count = entriesForProvider;
+    } else if (Array.isArray(entriesForProvider)) {
+        const targetProvId = entry.providerId;
+        if (
+            targetProvId &&
+            entriesForProvider.some(e => e && e.providerId && e.providerId !== targetProvId)
+        ) {
+            count = entriesForProvider.filter(e => e && e.providerId === targetProvId).length;
+        } else {
+            count = entriesForProvider.length;
+        }
+    } else if (typeof entry.providerEntryCount === 'number') {
+        count = entry.providerEntryCount;
+    }
+
+    if (count >= 2) {
+        const tag =
+            typeof entry.accountTag === 'string' && entry.accountTag.trim() !== ''
+                ? entry.accountTag.trim()
+                : formatAccountShortTag(entry.account ?? entry);
+        return tag || getShortProviderName(entry);
+    }
+
+    return getShortProviderName(entry);
+}
+
+/**
+ * Builds ordered top-bar panel entries across visible providers for `'active'`, `'all'`, or `'selected'` mode.
+ *
+ * @param {Array<object>} visibleProviders
+ * @param {{
+ *   mode?: 'active'|'all'|'selected',
+ *   accountMode?: 'active'|'all'|'selected',
+ *   panelAccountMode?: 'active'|'all'|'selected',
+ *   accountIds?: ReadonlyArray<string>,
+ *   panelAccountIds?: ReadonlyArray<string>
+ * }} [options]
+ * @returns {Array<{
+ *   id: string,
+ *   providerId: string,
+ *   accountId: string,
+ *   displayName: string,
+ *   providerShortName: string,
+ *   iconName: string,
+ *   account: object,
+ *   accountLabel: string,
+ *   accountTag: string,
+ *   state: string,
+ *   isPassive: boolean,
+ *   isStale: boolean,
+ *   isSignedOut: boolean,
+ *   primaryBucket: object|null,
+ *   usedPercent: number|null,
+ *   remainingPercent: number|null,
+ *   severity: 'normal'|'warning'|'critical',
+ *   providerEntryCount: number,
+ *   label: string,
+ *   tooltip: string
+ * }>}
+ */
+export function buildPanelEntries(visibleProviders, options = {}) {
+    const providers = Array.isArray(visibleProviders) ? visibleProviders.filter(Boolean) : [];
+    const rawMode =
+        options?.mode ??
+        options?.accountMode ??
+        options?.panelAccountMode ??
+        'active';
+    const mode = rawMode === 'all' || rawMode === 'selected' ? rawMode : 'active';
+    const rawAccountIds =
+        options?.accountIds ??
+        options?.panelAccountIds ??
+        [];
+    const selectedSet = new Set(
+        Array.isArray(rawAccountIds)
+            ? rawAccountIds.map(s => String(s ?? '').trim()).filter(Boolean)
+            : []
+    );
+
+    const allEntries = [];
+
+    for (const prov of providers) {
+        if (!prov || typeof prov !== 'object')
+            continue;
+
+        const provId = String(prov.id || 'agent');
+        const meta = PROVIDER_BY_ID[provId];
+        const displayName = String(prov.display_name || meta?.displayName || provId || 'Agent');
+        const providerShortName = getShortProviderName({id: provId, displayName});
+        const iconName = String(prov.icon_name || meta?.iconName || 'agent-status-symbolic');
+        const accounts = Array.isArray(prov.accounts) ? prov.accounts.filter(Boolean) : [];
+        const activeAcc = getActiveAccount(prov);
+
+        let candidates;
+        if (mode === 'all') {
+            candidates = accounts;
+        } else if (mode === 'selected') {
+            const matched = accounts.filter(
+                a => a && typeof a.id === 'string' && selectedSet.has(a.id)
+            );
+            candidates = matched.length > 0 ? matched : (activeAcc ? [activeAcc] : []);
+        } else {
+            candidates = activeAcc ? [activeAcc] : [];
+        }
+
+        if (
+            candidates.length === 0 &&
+            accounts.length === 0 &&
+            typeof prov.primary_used_percent === 'number'
+        ) {
+            const synthUsed = clampPercent(prov.primary_used_percent);
+            const synthRem = typeof prov.primary_remaining_percent === 'number'
+                ? clampPercent(prov.primary_remaining_percent)
+                : Math.max(0, 100 - synthUsed);
+            candidates = [
+                {
+                    id: `${provId}:default`,
+                    label: displayName,
+                    is_active: true,
+                    state: 'active_ok',
+                    buckets: [
+                        {
+                            id: 'primary',
+                            label: 'Usage',
+                            short_label: 'wk',
+                            is_primary: true,
+                            used_percent: synthUsed,
+                            remaining_percent: synthRem,
+                            resets_at_epoch: prov.primary_reset_epoch ?? null,
+                        },
+                    ],
+                },
+            ];
+        }
+
+        const provEntries = [];
+
+        for (const acc of candidates) {
+            if (!acc || typeof acc !== 'object')
+                continue;
+
+            const accountId = String(acc.id || `${provId}:default`);
+            const state = String(acc.state || (acc.error ? 'error' : 'active_ok'));
+            const isSignedOut = state === 'signed_out';
+            const buckets = Array.isArray(acc.buckets) ? acc.buckets.filter(Boolean) : [];
+            const isUsable =
+                state === 'active_ok' ||
+                state === 'expiring_soon' ||
+                state === 'passive_cached' ||
+                (state === 'rate_limited' && buckets.length > 0);
+
+            let primaryBucket = null;
+            if (isUsable) {
+                primaryBucket = buckets.find(b => b.is_primary) ?? buckets[0] ?? null;
+                if (
+                    (!primaryBucket || typeof primaryBucket.used_percent !== 'number') &&
+                    acc === activeAcc &&
+                    typeof prov.primary_used_percent === 'number'
+                ) {
+                    const fallbackUsed = clampPercent(prov.primary_used_percent);
+                    const fallbackRem = typeof prov.primary_remaining_percent === 'number'
+                        ? clampPercent(prov.primary_remaining_percent)
+                        : Math.max(0, 100 - fallbackUsed);
+                    primaryBucket = {
+                        id: 'primary',
+                        label: 'Usage',
+                        short_label: 'wk',
+                        is_primary: true,
+                        used_percent: fallbackUsed,
+                        remaining_percent: fallbackRem,
+                        resets_at_epoch: prov.primary_reset_epoch ?? null,
+                    };
+                }
+            }
+
+            const hasValidPrimary =
+                Boolean(primaryBucket && typeof primaryBucket.used_percent === 'number');
+            if (!hasValidPrimary && !isSignedOut)
+                continue;
+
+            const usedPercent = hasValidPrimary
+                ? clampPercent(primaryBucket.used_percent)
+                : null;
+            const remainingPercent = hasValidPrimary
+                ? (typeof primaryBucket.remaining_percent === 'number'
+                    ? clampPercent(primaryBucket.remaining_percent)
+                    : Math.max(0, 100 - usedPercent))
+                : null;
+            const severity = isSignedOut
+                ? 'critical'
+                : getSeverityForUsedPercent(usedPercent);
+            const accountLabel = String(acc.label || accountId || displayName).trim();
+            const accountTag = formatAccountShortTag(acc);
+
+            provEntries.push({
+                id: `${provId}::${accountId}`,
+                providerId: provId,
+                accountId,
+                displayName,
+                providerShortName,
+                iconName,
+                account: acc,
+                accountLabel,
+                accountTag,
+                state,
+                isPassive: state === 'passive_cached',
+                isStale: Boolean(acc.is_stale),
+                isSignedOut,
+                primaryBucket: hasValidPrimary ? primaryBucket : null,
+                usedPercent,
+                remainingPercent,
+                severity,
+                providerEntryCount: 1,
+                label: '',
+                tooltip: accountLabel,
+            });
+        }
+
+        for (const entry of provEntries) {
+            entry.providerEntryCount = provEntries.length;
+            entry.label = formatPanelPillLabel(entry, provEntries);
+            allEntries.push(entry);
+        }
+    }
+
+    return allEntries;
+}
+
+/**
+ * Computes top-bar summary data (severity, pills, and full-text label)
+ * from the visible providers.
  *
  * @param {Array<object>} visibleProviders
  * @param {'used'|'remaining'} [metricMode='used']
  * @param {string} [separator=' | ']
+ * @param {{
+ *   mode?: 'active'|'all'|'selected',
+ *   accountMode?: 'active'|'all'|'selected',
+ *   panelAccountMode?: 'active'|'all'|'selected',
+ *   accountIds?: ReadonlyArray<string>,
+ *   panelAccountIds?: ReadonlyArray<string>,
+ *   panelMode?: 'icon'|'compact-pills'|'labeled-pills'|'full-text'
+ * }} [options]
  */
-export function computePanelSummary(visibleProviders, metricMode = 'used', separator = ' | ') {
+export function computePanelSummary(
+    visibleProviders,
+    metricMode = 'used',
+    separator = ' | ',
+    options = {}
+) {
+    let resolvedMetric = metricMode;
+    let resolvedSeparator = separator;
+    let resolvedOpts = options;
+
+    if (metricMode && typeof metricMode === 'object') {
+        resolvedOpts = metricMode;
+        resolvedMetric = resolvedOpts.metricMode ?? 'used';
+        resolvedSeparator = typeof resolvedOpts.separator === 'string'
+            ? resolvedOpts.separator
+            : ' | ';
+    } else if (separator && typeof separator === 'object') {
+        resolvedOpts = separator;
+        resolvedSeparator = typeof resolvedOpts.separator === 'string'
+            ? resolvedOpts.separator
+            : ' | ';
+    }
+
     const providers = Array.isArray(visibleProviders) ? visibleProviders : [];
+    const entries = buildPanelEntries(providers, resolvedOpts);
+    const panelMode = resolvedOpts?.panelMode ?? null;
+
     let maxUsedPercent = 0;
     let hasAuthError = false;
     const pills = [];
     const textSegments = [];
 
-    for (const prov of providers) {
-        const activeAcc = getActiveAccount(prov);
-        if (activeAcc?.state === 'signed_out')
+    for (const entry of entries) {
+        const pillLabel = panelMode === 'compact-pills' ? '' : entry.label;
+        const head =
+            entry.providerEntryCount >= 2 && entry.accountTag
+                ? `${entry.displayName} (${entry.accountTag})`
+                : entry.displayName;
+
+        if (entry.isSignedOut) {
             hasAuthError = true;
-
-        const hasPrimary = typeof prov.primary_used_percent === 'number';
-        if (hasPrimary) {
-            const used = clampPercent(prov.primary_used_percent);
-            const rem = typeof prov.primary_remaining_percent === 'number'
-                ? clampPercent(prov.primary_remaining_percent)
-                : Math.max(0, 100 - used);
-            const displayPercent = metricMode === 'remaining' ? rem : used;
-            const itemSeverity = getSeverityForUsedPercent(used);
-            maxUsedPercent = Math.max(maxUsedPercent, used);
-
             pills.push({
-                id: prov.id,
-                displayName: prov.display_name,
-                iconName: prov.icon_name,
-                usedPercent: used,
-                displayPercent,
-                percentText: `${displayPercent}%`,
-                severity: itemSeverity,
-            });
-            textSegments.push(`${prov.display_name}: ${displayPercent}%`);
-        } else if (activeAcc?.state === 'signed_out') {
-            pills.push({
-                id: prov.id,
-                displayName: prov.display_name,
-                iconName: prov.icon_name,
+                id: entry.id,
+                providerId: entry.providerId,
+                accountId: entry.accountId,
+                displayName: entry.displayName,
+                iconName: entry.iconName,
                 usedPercent: null,
                 displayPercent: null,
                 percentText: '!',
                 severity: 'critical',
+                label: pillLabel,
+                tooltip: entry.tooltip,
+                state: entry.state,
+                isPassive: false,
             });
-            textSegments.push(`${prov.display_name}: AUTH`);
+            textSegments.push(`${head}: AUTH`);
+        } else if (typeof entry.usedPercent === 'number') {
+            const used = entry.usedPercent;
+            const rem = entry.remainingPercent;
+            const displayPercent = resolvedMetric === 'remaining' ? rem : used;
+            const itemSeverity = entry.severity;
+            maxUsedPercent = Math.max(maxUsedPercent, used);
+
+            pills.push({
+                id: entry.id,
+                providerId: entry.providerId,
+                accountId: entry.accountId,
+                displayName: entry.displayName,
+                iconName: entry.iconName,
+                usedPercent: used,
+                displayPercent,
+                percentText: `${displayPercent}%`,
+                severity: itemSeverity,
+                label: pillLabel,
+                tooltip: entry.tooltip,
+                state: entry.state,
+                isPassive: entry.isPassive,
+            });
+            textSegments.push(`${head}: ${displayPercent}%`);
         }
     }
 
@@ -1664,7 +2061,7 @@ export function computePanelSummary(visibleProviders, metricMode = 'used', separ
     if (hasAuthError && providers.length > 0 && pills.every(p => p.usedPercent === null))
         severity = 'critical';
 
-    const fullText = textSegments.length > 0 ? textSegments.join(separator) : 'Agents: —';
+    const fullText = textSegments.length > 0 ? textSegments.join(resolvedSeparator) : 'Agents: —';
 
     return {
         maxUsedPercent,
@@ -1677,8 +2074,8 @@ export function computePanelSummary(visibleProviders, metricMode = 'used', separ
 }
 
 /**
- * Evaluates smart quota warning, critical, and reset notification transitions across
- * providers while mutating `bucketStates` in-place.
+ * Evaluates quota warning, critical, and reset notification transitions across
+ * providers and updates `bucketStates` in place.
  *
  * @param {Map<string, object>} bucketStates
  * @param {object} report
@@ -1689,7 +2086,12 @@ export function computePanelSummary(visibleProviders, metricMode = 'used', separ
  *   providerOrder?: ReadonlyArray<string>,
  *   notifyOnWarning?: boolean,
  *   notifyOnCritical?: boolean,
- *   notifyOnReset?: boolean
+ *   notifyOnReset?: boolean,
+ *   mode?: 'active'|'all'|'selected',
+ *   accountMode?: 'active'|'all'|'selected',
+ *   panelAccountMode?: 'active'|'all'|'selected',
+ *   accountIds?: ReadonlyArray<string>,
+ *   panelAccountIds?: ReadonlyArray<string>
  * }} [options]
  * @returns {Array<{
  *   kind: 'warning' | 'critical' | 'reset',
@@ -1710,6 +2112,11 @@ export function evaluateQuotaNotificationStep(
         notifyOnWarning = false,
         notifyOnCritical = true,
         notifyOnReset = true,
+        mode,
+        accountMode,
+        panelAccountMode = 'active',
+        accountIds,
+        panelAccountIds = [],
     } = {}
 ) {
     if (!(bucketStates instanceof Map) || !report || typeof report !== 'object')
@@ -1717,15 +2124,20 @@ export function evaluateQuotaNotificationStep(
 
     const normalized = normalizeStatusReport(report, nowEpoch);
     const allProviders = sortProvidersByOrder(normalized.providers ?? [], providerOrder);
-    const visibleSet = new Set(
-        filterVisibleProviders(allProviders, hiddenProviderIds).map(p => p.id)
-    );
+    const visibleProviders = filterVisibleProviders(allProviders, hiddenProviderIds);
+    const effectiveMode = mode ?? accountMode ?? panelAccountMode ?? 'active';
+    const effectiveAccountIds = accountIds ?? panelAccountIds ?? [];
+    const shownEntries = buildPanelEntries(visibleProviders, {
+        mode: effectiveMode,
+        accountIds: effectiveAccountIds,
+    });
+    const shownAccounts = new Set(shownEntries.map(e => e.account));
+    const shownEntryIds = new Set(shownEntries.map(e => e.id));
 
     const emitted = [];
 
     for (const prov of allProviders) {
         const accounts = Array.isArray(prov?.accounts) ? prov.accounts : [];
-        const activeAcc = getActiveAccount(prov);
 
         for (const acc of accounts) {
             if (!acc || acc.state === 'signed_out')
@@ -1737,6 +2149,7 @@ export function evaluateQuotaNotificationStep(
                 continue;
 
             const bucketId = primaryBucket.id || primaryBucket.short_label || 'primary';
+            const accId = acc.id || `${prov.id}:default`;
             const key = `${prov.id}::${acc.id || 'default'}::${bucketId}`;
             const usedPercent = clampPercent(primaryBucket.used_percent ?? 0);
             const resetsAtEpoch =
@@ -1747,7 +2160,8 @@ export function evaluateQuotaNotificationStep(
                     : null;
             const windowToken = resetsAtEpoch !== null ? String(resetsAtEpoch) : 'static';
 
-            const isTargetActive = activeAcc === acc && visibleSet.has(prov.id);
+            const isTargetActive =
+                shownAccounts.has(acc) || shownEntryIds.has(`${prov.id}::${accId}`);
             const prev = bucketStates.get(key);
 
             if (isInitialHydration || !prev) {

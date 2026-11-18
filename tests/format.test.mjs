@@ -10,6 +10,8 @@ import {
     CANONICAL_PROVIDERS,
     DEFAULT_HIDDEN_PROVIDERS,
     DEFAULT_PROVIDER_ORDER,
+    PANEL_ACCOUNT_MODES,
+    PANEL_MODES,
     POPOVER_LAYOUTS,
     PROVIDER_BY_ID,
     QUICK_THEME_IDS,
@@ -18,6 +20,7 @@ import {
     THEME_CATEGORIES,
     THEME_PRESETS,
     buildConfigUpsertArgs,
+    buildPanelEntries,
     buildTerminalArgv,
     clampPercent,
     computeBucketPace,
@@ -25,11 +28,13 @@ import {
     defaultCredentialWatchPaths,
     evaluateQuotaNotificationStep,
     filterVisibleProviders,
+    formatAccountShortTag,
     formatBucketDisplayLabel,
     formatBucketMetric,
     formatClipboardSummary,
     formatCompactAccountExtraNote,
     formatCreditsSummary,
+    formatPanelPillLabel,
     formatRelativeUpdated,
     formatResetCountdown,
     getActiveAccount,
@@ -768,6 +773,247 @@ describe('normalizeStatusReport, Labels & computePanelSummary', () => {
         assert.equal(slugifyAccountId('  Work Account #2! '), 'work-account-2');
         assert.equal(buildConfigUpsertArgs({provider: 'openrouter', id: 'main', label: 'Main'})[3], 'openrouter');
     });
+
+    function makeMultiAccountProviders() {
+        return normalizeStatusReport({
+            schema_version: 2,
+            providers: [
+                {
+                    id: 'claude',
+                    display_name: 'Claude',
+                    icon_name: 'provider-claude',
+                    active_account_id: 'claude:home',
+                    accounts: [
+                        {
+                            id: 'claude:work',
+                            label: 'work@example.com',
+                            is_active: false,
+                            state: 'active_ok',
+                            buckets: [
+                                {
+                                    id: 'wk',
+                                    label: 'Weekly',
+                                    short_label: 'wk',
+                                    is_primary: true,
+                                    used_percent: 98,
+                                    remaining_percent: 2,
+                                    resets_at_epoch: NOW + 86_400,
+                                },
+                            ],
+                        },
+                        {
+                            id: 'claude:home',
+                            label: 'home@example.com',
+                            is_active: true,
+                            state: 'active_ok',
+                            buckets: [
+                                {
+                                    id: 'wk',
+                                    label: 'Weekly',
+                                    short_label: 'wk',
+                                    is_primary: true,
+                                    used_percent: 20,
+                                    remaining_percent: 80,
+                                    resets_at_epoch: NOW + 172_800,
+                                },
+                            ],
+                        },
+                    ],
+                },
+                {
+                    id: 'codex',
+                    display_name: 'Codex',
+                    icon_name: 'provider-codex',
+                    active_account_id: 'codex:default',
+                    accounts: [
+                        {
+                            id: 'codex:default',
+                            label: 'dev@example.com',
+                            is_active: true,
+                            state: 'active_ok',
+                            buckets: [
+                                {
+                                    id: 'wk',
+                                    label: 'Weekly',
+                                    short_label: 'wk',
+                                    is_primary: true,
+                                    used_percent: 41,
+                                    remaining_percent: 59,
+                                    resets_at_epoch: NOW + 172_800,
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }, NOW).providers;
+    }
+
+    it('keeps active mode and compact-pills output equal to legacy behavior', () => {
+        const providers = makeMultiAccountProviders();
+        const defaultSummary = computePanelSummary(providers, 'used', ' | ');
+        const activeCompact = computePanelSummary(providers, 'used', ' | ', {
+            mode: 'active',
+            panelMode: 'compact-pills',
+        });
+
+        assert.equal(defaultSummary.pills.length, 2);
+        assert.equal(defaultSummary.maxUsedPercent, 41);
+        assert.equal(defaultSummary.severity, 'normal');
+        assert.equal(defaultSummary.fullText, 'Claude: 20% | Codex: 41%');
+        assert.equal(defaultSummary.pills[0].percentText, '20%');
+        assert.equal(defaultSummary.pills[1].percentText, '41%');
+
+        assert.equal(activeCompact.pills.length, 2);
+        assert.equal(activeCompact.maxUsedPercent, 41);
+        assert.equal(activeCompact.severity, 'normal');
+        assert.equal(activeCompact.fullText, 'Claude: 20% | Codex: 41%');
+        assert.equal(activeCompact.pills[0].percentText, '20%');
+        assert.equal(activeCompact.pills[0].label, '');
+        assert.equal(activeCompact.pills[0].tooltip, 'home@example.com');
+
+        assert.deepEqual(
+            PANEL_MODES.map(m => m.id),
+            ['icon', 'compact-pills', 'labeled-pills', 'full-text']
+        );
+        assert.deepEqual(
+            PANEL_ACCOUNT_MODES.map(m => m.id),
+            ['active', 'all', 'selected']
+        );
+    });
+
+    it('shows two Claude pills in all mode and sets severity to the worst account', () => {
+        const providers = makeMultiAccountProviders();
+        const allSummary = computePanelSummary(providers, 'used', ' | ', {
+            mode: 'all',
+        });
+
+        assert.equal(allSummary.pills.length, 3);
+        assert.equal(allSummary.maxUsedPercent, 98);
+        assert.equal(allSummary.severity, 'critical');
+        assert.equal(allSummary.fullText, 'Claude (work): 98% | Claude (home): 20% | Codex: 41%');
+
+        assert.equal(allSummary.pills[0].id, 'claude::claude:work');
+        assert.equal(allSummary.pills[0].percentText, '98%');
+        assert.equal(allSummary.pills[0].severity, 'critical');
+
+        assert.equal(allSummary.pills[1].id, 'claude::claude:home');
+        assert.equal(allSummary.pills[1].percentText, '20%');
+        assert.equal(allSummary.pills[1].severity, 'normal');
+
+        assert.equal(allSummary.pills[2].id, 'codex::codex:default');
+        assert.equal(allSummary.pills[2].percentText, '41%');
+        assert.equal(allSummary.pills[2].severity, 'normal');
+    });
+
+    it('uses account tags for multi-account providers and short provider name for single-account providers in labeled-pills', () => {
+        const providers = makeMultiAccountProviders();
+        const entries = buildPanelEntries(providers, {mode: 'all'});
+        assert.equal(entries.length, 3);
+
+        const claudeEntries = entries.filter(e => e.providerId === 'claude');
+        const codexEntries = entries.filter(e => e.providerId === 'codex');
+        assert.equal(formatPanelPillLabel(claudeEntries[0], claudeEntries), 'work');
+        assert.equal(formatPanelPillLabel(claudeEntries[1], claudeEntries), 'home');
+        assert.equal(formatPanelPillLabel(codexEntries[0], codexEntries), 'Codex');
+
+        const labeled = computePanelSummary(providers, 'used', ' | ', {
+            mode: 'all',
+            panelMode: 'labeled-pills',
+        });
+        assert.equal(labeled.pills[0].label, 'work');
+        assert.equal(labeled.pills[1].label, 'home');
+        assert.equal(labeled.pills[2].label, 'Codex');
+
+        assert.equal(formatAccountShortTag({id: 'claude:work', label: 'work@example.com'}), 'work');
+        assert.equal(formatAccountShortTag({id: 'claude:team', label: 'TeamProfileName'}), 'TeamProf');
+    });
+
+    it('gives compact-pills a tooltip and an empty text label', () => {
+        const providers = makeMultiAccountProviders();
+        const compact = computePanelSummary(providers, 'used', ' | ', {
+            mode: 'all',
+            panelMode: 'compact-pills',
+        });
+
+        assert.equal(compact.pills.length, 3);
+        assert.equal(compact.pills[0].label, '');
+        assert.equal(compact.pills[0].tooltip, 'work@example.com');
+        assert.equal(compact.pills[1].label, '');
+        assert.equal(compact.pills[1].tooltip, 'home@example.com');
+        assert.equal(compact.pills[2].label, '');
+        assert.equal(compact.pills[2].tooltip, 'dev@example.com');
+    });
+
+    it('falls back to the active account when a selected ID does not match an account', () => {
+        const providers = makeMultiAccountProviders();
+        const fallbackEntries = buildPanelEntries(providers, {
+            mode: 'selected',
+            accountIds: ['claude:missing'],
+        });
+        assert.equal(fallbackEntries.length, 2);
+        assert.equal(fallbackEntries[0].accountId, 'claude:home');
+        assert.equal(fallbackEntries[0].usedPercent, 20);
+        assert.equal(fallbackEntries[1].accountId, 'codex:default');
+        assert.equal(fallbackEntries[1].usedPercent, 41);
+
+        const matchedSummary = computePanelSummary(providers, 'used', ' | ', {
+            mode: 'selected',
+            accountIds: ['claude:work'],
+        });
+        assert.equal(matchedSummary.pills.length, 2);
+        assert.equal(matchedSummary.pills[0].id, 'claude::claude:work');
+        assert.equal(matchedSummary.pills[0].percentText, '98%');
+        assert.equal(matchedSummary.pills[1].id, 'codex::codex:default');
+        assert.equal(matchedSummary.pills[1].percentText, '41%');
+
+        const clipAll = formatClipboardSummary(providers, 'used', NOW, {mode: 'all'});
+        assert.match(clipAll, /- Claude \(work\): Weekly 98% used/);
+        assert.match(clipAll, /- Claude \(home\): Weekly 20% used/);
+        assert.match(clipAll, /- Codex: Weekly 41% used/);
+
+        // Passive cached accounts set isPassive, signed_out shows '!', and empty non-signed-out accounts are skipped
+        const mixedProviders = [
+            {
+                id: 'claude',
+                display_name: 'Claude',
+                icon_name: 'provider-claude',
+                active_account_id: 'claude:work',
+                accounts: [
+                    {
+                        id: 'claude:work',
+                        label: 'work@example.com',
+                        is_active: true,
+                        state: 'passive_cached',
+                        buckets: [{id: 'wk', is_primary: true, used_percent: 33, remaining_percent: 67}],
+                    },
+                    {
+                        id: 'claude:empty',
+                        label: 'empty@example.com',
+                        is_active: false,
+                        state: 'active_ok',
+                        buckets: [],
+                    },
+                    {
+                        id: 'claude:out',
+                        label: 'out@example.com',
+                        is_active: false,
+                        state: 'signed_out',
+                        buckets: [],
+                    },
+                ],
+            },
+        ];
+        const mixedSummary = computePanelSummary(mixedProviders, 'used', ' | ', {mode: 'all'});
+        assert.equal(mixedSummary.pills.length, 2);
+        assert.equal(mixedSummary.pills[0].id, 'claude::claude:work');
+        assert.equal(mixedSummary.pills[0].isPassive, true);
+        assert.equal(mixedSummary.pills[0].percentText, '33%');
+        assert.equal(mixedSummary.pills[1].id, 'claude::claude:out');
+        assert.equal(mixedSummary.pills[1].percentText, '!');
+        assert.equal(mixedSummary.pills[1].severity, 'critical');
+        assert.equal(mixedSummary.fullText, 'Claude (work): 33% | Claude (out): AUTH');
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -860,6 +1106,111 @@ describe('evaluateQuotaNotificationStep', () => {
             }),
             []
         );
+    });
+
+    it('sends alerts for a non-active account when the panel shows that account', () => {
+        function makeTwoAccountClaudeReport(workUsed, homeUsed, workReset = WIN_1) {
+            return {
+                schema_version: 2,
+                updated_at_epoch: NOW,
+                providers: [
+                    {
+                        id: 'claude',
+                        active_account_id: 'claude:home',
+                        accounts: [
+                            {
+                                id: 'claude:work',
+                                label: 'work@example.com',
+                                is_active: false,
+                                state: 'active_ok',
+                                buckets: [
+                                    {
+                                        id: 'wk',
+                                        short_label: 'wk',
+                                        is_primary: true,
+                                        used_percent: workUsed,
+                                        resets_at_epoch: workReset,
+                                    },
+                                ],
+                            },
+                            {
+                                id: 'claude:home',
+                                label: 'home@example.com',
+                                is_active: true,
+                                state: 'active_ok',
+                                buckets: [
+                                    {
+                                        id: 'wk',
+                                        short_label: 'wk',
+                                        is_primary: true,
+                                        used_percent: homeUsed,
+                                        resets_at_epoch: WIN_1,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            };
+        }
+
+        // In 'active' mode, non-active claude:work crossing 90% does not emit an alert
+        const activeStates = new Map();
+        evaluateQuotaNotificationStep(activeStates, makeTwoAccountClaudeReport(70, 20), {
+            isInitialHydration: true,
+            nowEpoch: NOW,
+            mode: 'active',
+        });
+        assert.deepEqual(
+            evaluateQuotaNotificationStep(activeStates, makeTwoAccountClaudeReport(94, 20), {
+                nowEpoch: NOW + 60,
+                mode: 'active',
+                notifyOnCritical: true,
+            }),
+            []
+        );
+
+        // In 'all' mode, non-active claude:work crossing 90% emits a critical alert
+        const allStates = new Map();
+        evaluateQuotaNotificationStep(allStates, makeTwoAccountClaudeReport(70, 20), {
+            isInitialHydration: true,
+            nowEpoch: NOW,
+            mode: 'all',
+        });
+        const allAlerts = evaluateQuotaNotificationStep(allStates, makeTwoAccountClaudeReport(94, 20), {
+            nowEpoch: NOW + 60,
+            mode: 'all',
+            notifyOnCritical: true,
+        });
+        assert.equal(allAlerts.length, 1);
+        assert.equal(allAlerts[0].kind, 'critical');
+        assert.equal(allAlerts[0].providerId, 'claude');
+
+        // In 'selected' mode with claude:work selected, non-active claude:work emits warning and reset alerts
+        const selectedStates = new Map();
+        evaluateQuotaNotificationStep(selectedStates, makeTwoAccountClaudeReport(75, 20), {
+            isInitialHydration: true,
+            nowEpoch: NOW,
+            mode: 'selected',
+            accountIds: ['claude:work'],
+        });
+        const selectedWarn = evaluateQuotaNotificationStep(selectedStates, makeTwoAccountClaudeReport(85, 20), {
+            nowEpoch: NOW + 60,
+            mode: 'selected',
+            accountIds: ['claude:work'],
+            notifyOnWarning: true,
+        });
+        assert.equal(selectedWarn.length, 1);
+        assert.equal(selectedWarn[0].kind, 'warning');
+
+        const selectedReset = evaluateQuotaNotificationStep(selectedStates, makeTwoAccountClaudeReport(0, 20, WIN_2), {
+            nowEpoch: WIN_1 + 10,
+            mode: 'selected',
+            accountIds: ['claude:work'],
+            notifyOnReset: true,
+        });
+        assert.equal(selectedReset.length, 1);
+        assert.equal(selectedReset[0].kind, 'reset');
     });
 });
 
