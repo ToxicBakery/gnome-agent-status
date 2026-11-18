@@ -80,11 +80,6 @@
     font-feature-settings: "tnum";
 }
 
-.gas-panel-pill.is-passive .gas-panel-pill-text,
-.gas-panel-pill.is-passive .gas-panel-pill-label {
-    color: rgba(255, 255, 255, 0.58);
-}
-
 .gas-panel-pill-label.is-warning,
 .gas-panel-full-text.is-warning {
     color: #e0af68;
@@ -112,11 +107,6 @@
 
 .gas-panel-box.on-light-panel .gas-panel-dot.is-critical {
     background-color: #c92a2a;
-}
-
-.gas-panel-box.on-light-panel .gas-panel-pill.is-passive .gas-panel-pill-text,
-.gas-panel-box.on-light-panel .gas-panel-pill.is-passive .gas-panel-pill-label {
-    color: rgba(18, 21, 28, 0.58);
 }
 
 .gas-panel-box.on-light-panel .gas-panel-pill-label.is-warning,

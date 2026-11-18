@@ -76,6 +76,8 @@ class AgentStatusIndicator extends PanelMenu.Button {
         this._copySummaryMenuItem = null;
         this._settingsMenuItem = null;
         this._desktopSettings = createDesktopInterfaceSettings();
+        // PopoverTooltipManager uses isMenuOpen as its visibility gate.
+        // The top-bar pill tooltip shows only while both panel menus are closed.
         this._pillTooltips = new PopoverTooltipManager({
             desktopSettings: this._desktopSettings,
             isMenuOpen: () => !this.menu?.isOpen && !this._contextMenu?.isOpen,
@@ -820,7 +822,9 @@ class AgentStatusIndicator extends PanelMenu.Button {
             else if (item.severity === 'warning')
                 slot.label.add_style_class_name('is-warning');
 
-            if (item.isPassive || item.state === 'passive_cached')
+            const isPassive = Boolean(item.isPassive || item.state === 'passive_cached');
+            slot.wrap.opacity = isPassive ? 153 : 255;
+            if (isPassive)
                 slot.wrap.add_style_class_name('is-passive');
             else
                 slot.wrap.remove_style_class_name('is-passive');

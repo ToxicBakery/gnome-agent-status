@@ -116,7 +116,7 @@ export class QuickOptionsPage {
         // 1. Top Bar Mode
         bodyBox.add_child(this._createSectionLabel(_('Top Bar Mode')));
         this._panelModeToggle = new SegmentedToggle({
-            options: PANEL_MODES,
+            options: PANEL_MODES.map(o => ({id: o.id, label: o.shortLabel || o.label})),
             activeId: this._settings.get_string('panel-mode') || 'icon',
             onChange: id => this._settings.set_string('panel-mode', id),
         });
@@ -125,7 +125,7 @@ export class QuickOptionsPage {
         // 1b. Top Bar Accounts
         bodyBox.add_child(this._createSectionLabel(_('Top bar accounts')));
         this._panelAccountModeToggle = new SegmentedToggle({
-            options: PANEL_ACCOUNT_MODES,
+            options: PANEL_ACCOUNT_MODES.map(o => ({id: o.id, label: o.shortLabel || o.label})),
             activeId: getSettingStringSafe(this._settings, 'panel-account-mode', 'active'),
             onChange: id => setSettingStringSafe(this._settings, 'panel-account-mode', id),
         });

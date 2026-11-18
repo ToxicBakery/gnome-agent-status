@@ -123,16 +123,16 @@ export const PROVIDER_BY_ID = Object.freeze(
 );
 
 export const PANEL_MODES = Object.freeze([
-    Object.freeze({id: 'icon', label: 'Minimal Icon'}),
-    Object.freeze({id: 'compact-pills', label: 'Compact Pills'}),
-    Object.freeze({id: 'labeled-pills', label: 'Pills with text'}),
-    Object.freeze({id: 'full-text', label: 'Full Text'}),
+    Object.freeze({id: 'icon', label: 'Minimal Icon', shortLabel: 'Icon'}),
+    Object.freeze({id: 'compact-pills', label: 'Compact Pills', shortLabel: 'Pills'}),
+    Object.freeze({id: 'labeled-pills', label: 'Pills with text', shortLabel: 'Labeled'}),
+    Object.freeze({id: 'full-text', label: 'Full Text', shortLabel: 'Text'}),
 ]);
 
 export const PANEL_ACCOUNT_MODES = Object.freeze([
-    Object.freeze({id: 'active', label: 'Active account only'}),
-    Object.freeze({id: 'all', label: 'All accounts'}),
-    Object.freeze({id: 'selected', label: 'Selected accounts'}),
+    Object.freeze({id: 'active', label: 'Active account only', shortLabel: 'Active'}),
+    Object.freeze({id: 'all', label: 'All accounts', shortLabel: 'All'}),
+    Object.freeze({id: 'selected', label: 'Selected accounts', shortLabel: 'Selected'}),
 ]);
 
 export const PANEL_BOXES = Object.freeze([
@@ -1370,7 +1370,8 @@ export function formatClipboardSummary(
         const multiAccount = targetAccounts.length >= 2;
 
         for (const acc of targetAccounts) {
-            const tier = acc?.plan_tier || (acc === activeAcc ? prov.plan_badge : '') || '';
+            const tier =
+                (acc === activeAcc ? (prov.plan_badge || acc?.plan_tier) : acc?.plan_tier) || '';
             const tag = multiAccount ? formatAccountShortTag(acc) : '';
             const badgeParts = [tag, tier].filter(Boolean);
             const head = badgeParts.length > 0 ? `${name} (${badgeParts.join(' · ')})` : name;
@@ -1552,14 +1553,25 @@ export function normalizeStatusReport(raw, nowEpoch = Math.floor(Date.now() / 10
         };
 
         const activeAcc = getActiveAccount(normalizedProvider);
-        const primaryBucket =
-            activeAcc?.buckets?.find(b => b.is_primary) ?? activeAcc?.buckets?.[0] ?? null;
+        const activeBuckets = Array.isArray(activeAcc?.buckets) ? activeAcc.buckets : [];
+        const activeState = String(activeAcc?.state || (activeAcc?.error ? 'error' : 'active_ok'));
+        const activeUsable =
+            activeState === 'active_ok' ||
+            activeState === 'expiring_soon' ||
+            activeState === 'passive_cached' ||
+            (activeState === 'rate_limited' && activeBuckets.length > 0);
+        const primaryBucket = activeUsable
+            ? (activeBuckets.find(b => b.is_primary) ?? activeBuckets[0] ?? null)
+            : null;
 
         if (primaryBucket) {
             normalizedProvider.primary_used_percent = primaryBucket.used_percent;
             normalizedProvider.primary_remaining_percent = primaryBucket.remaining_percent;
             if (primaryBucket.resets_at_epoch)
                 normalizedProvider.primary_reset_epoch = primaryBucket.resets_at_epoch;
+        } else if (activeAcc && !activeUsable) {
+            normalizedProvider.primary_used_percent = null;
+            normalizedProvider.primary_remaining_percent = null;
         } else if (
             typeof normalizedProvider.primary_reset_epoch === 'number' &&
             normalizedProvider.primary_reset_epoch > 0 &&
@@ -2125,19 +2137,27 @@ export function evaluateQuotaNotificationStep(
     const normalized = normalizeStatusReport(report, nowEpoch);
     const allProviders = sortProvidersByOrder(normalized.providers ?? [], providerOrder);
     const visibleProviders = filterVisibleProviders(allProviders, hiddenProviderIds);
-    const effectiveMode = mode ?? accountMode ?? panelAccountMode ?? 'active';
+    const visibleSet = new Set(visibleProviders.map(p => p.id));
+    const rawMode = mode ?? accountMode ?? panelAccountMode ?? 'active';
+    const effectiveMode = rawMode === 'all' || rawMode === 'selected' ? rawMode : 'active';
     const effectiveAccountIds = accountIds ?? panelAccountIds ?? [];
-    const shownEntries = buildPanelEntries(visibleProviders, {
-        mode: effectiveMode,
-        accountIds: effectiveAccountIds,
-    });
-    const shownAccounts = new Set(shownEntries.map(e => e.account));
-    const shownEntryIds = new Set(shownEntries.map(e => e.id));
+
+    let shownAccounts = null;
+    let shownEntryIds = null;
+    if (effectiveMode !== 'active') {
+        const shownEntries = buildPanelEntries(visibleProviders, {
+            mode: effectiveMode,
+            accountIds: effectiveAccountIds,
+        });
+        shownAccounts = new Set(shownEntries.map(e => e.account));
+        shownEntryIds = new Set(shownEntries.map(e => e.id));
+    }
 
     const emitted = [];
 
     for (const prov of allProviders) {
         const accounts = Array.isArray(prov?.accounts) ? prov.accounts : [];
+        const activeAcc = getActiveAccount(prov);
 
         for (const acc of accounts) {
             if (!acc || acc.state === 'signed_out')
@@ -2160,8 +2180,12 @@ export function evaluateQuotaNotificationStep(
                     : null;
             const windowToken = resetsAtEpoch !== null ? String(resetsAtEpoch) : 'static';
 
-            const isTargetActive =
-                shownAccounts.has(acc) || shownEntryIds.has(`${prov.id}::${accId}`);
+            const isActiveVisible = activeAcc === acc && visibleSet.has(prov.id);
+            const isTargetActive = effectiveMode === 'active'
+                ? isActiveVisible
+                : (isActiveVisible ||
+                    Boolean(shownAccounts?.has(acc)) ||
+                    Boolean(shownEntryIds?.has(`${prov.id}::${accId}`)));
             const prev = bucketStates.get(key);
 
             if (isInitialHydration || !prev) {
