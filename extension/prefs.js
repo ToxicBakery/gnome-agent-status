@@ -12,6 +12,7 @@ import {
     DENSITY_MODES,
     FONT_STYLES,
     METRIC_MODES,
+    PANEL_ACCOUNT_MODES,
     PANEL_BOXES,
     PANEL_MODES,
     PROVIDER_BY_ID,
@@ -1142,6 +1143,16 @@ export default class AgentStatusPreferences extends ExtensionPreferences {
             settings,
             key: 'panel-mode',
             defaultId: 'icon',
+            cli,
+        }));
+
+        panelGroup.add(createBoundComboRow({
+            title: _('Top bar accounts'),
+            subtitle: _('Show the active account only, all accounts, or selected accounts in the top bar'),
+            options: PANEL_ACCOUNT_MODES.map(o => ({id: o.id, label: _(o.label)})),
+            settings,
+            key: 'panel-account-mode',
+            defaultId: 'active',
             cli,
         }));
 

@@ -644,9 +644,6 @@ export class PopoverTooltipManager {
                         this._clearTimerFor(actor);
                 }
             }),
-            actor.connect('clicked', () => {
-                this.hide();
-            }),
             actor.connect('notify::mapped', () => {
                 if (!this._destroyed && !actor.mapped) {
                     if (this._activeTarget === actor)
@@ -656,6 +653,16 @@ export class PopoverTooltipManager {
                 }
             }),
         ];
+
+        try {
+            sigIds.push(
+                actor.connect('clicked', () => {
+                    this.hide();
+                })
+            );
+        } catch (_e) {
+            // Non-button actors do not emit the clicked signal
+        }
 
         const destroySigId = actor.connect('destroy', () => {
             this._entries.delete(actor);

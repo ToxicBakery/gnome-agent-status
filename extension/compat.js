@@ -301,14 +301,50 @@ export function setSettingStringSafe(settings, key, value) {
  * @returns {string[]}
  */
 export function getSettingStrvSafe(settings, key, fallback = []) {
-    if (!hasSettingKey(settings, key))
+    if (!settings || !key)
         return [...fallback];
+    if (!hasSettingKey(settings, key)) {
+        const map = FALLBACK_STRING_STORE.get(settings);
+        const stored = map?.get(key);
+        return Array.isArray(stored) ? [...stored] : [...fallback];
+    }
     try {
         const val = settings.get_strv(key);
         return Array.isArray(val) ? val : [...fallback];
     } catch (_e) {
         return [...fallback];
     }
+}
+
+/**
+ * Writes a `strv` (`as`) GSettings key safely.
+ *
+ * @param {Gio.Settings|null|undefined} settings
+ * @param {string} key
+ * @param {ReadonlyArray<string>} values
+ * @returns {boolean}
+ */
+export function setSettingStrvSafe(settings, key, values) {
+    if (!settings || !key)
+        return false;
+    const clean = Array.isArray(values)
+        ? values.map(v => String(v ?? '').trim()).filter(Boolean)
+        : [];
+    if (hasSettingKey(settings, key)) {
+        try {
+            settings.set_strv(key, clean);
+            return true;
+        } catch (_e) {
+            // Fall through to in-memory fallback
+        }
+    }
+    let map = FALLBACK_STRING_STORE.get(settings);
+    if (!map) {
+        map = new Map();
+        FALLBACK_STRING_STORE.set(settings, map);
+    }
+    map.set(key, clean);
+    return false;
 }
 
 /**

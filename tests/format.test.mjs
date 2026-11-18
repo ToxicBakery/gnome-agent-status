@@ -10,6 +10,8 @@ import {
     CANONICAL_PROVIDERS,
     DEFAULT_HIDDEN_PROVIDERS,
     DEFAULT_PROVIDER_ORDER,
+    PANEL_ACCOUNT_MODES,
+    PANEL_MODES,
     POPOVER_LAYOUTS,
     PROVIDER_BY_ID,
     QUICK_THEME_IDS,
@@ -18,6 +20,7 @@ import {
     THEME_CATEGORIES,
     THEME_PRESETS,
     buildConfigUpsertArgs,
+    buildPanelEntries,
     buildTerminalArgv,
     clampPercent,
     computeBucketPace,
@@ -25,13 +28,16 @@ import {
     defaultCredentialWatchPaths,
     evaluateQuotaNotificationStep,
     filterVisibleProviders,
+    formatAccountShortTag,
     formatBucketDisplayLabel,
     formatBucketMetric,
     formatClipboardSummary,
     formatCompactAccountExtraNote,
     formatCreditsSummary,
+    formatPanelPillLabel,
     formatRelativeUpdated,
     formatResetCountdown,
+    getActiveAccount,
     getBarFillRgba,
     getProviderAlertSeverity,
     getSeverityForUsedPercent,
@@ -767,6 +773,255 @@ describe('normalizeStatusReport, Labels & computePanelSummary', () => {
         assert.equal(slugifyAccountId('  Work Account #2! '), 'work-account-2');
         assert.equal(buildConfigUpsertArgs({provider: 'openrouter', id: 'main', label: 'Main'})[3], 'openrouter');
     });
+
+    function makeMultiAccountProviders() {
+        return normalizeStatusReport({
+            schema_version: 2,
+            providers: [
+                {
+                    id: 'claude',
+                    display_name: 'Claude',
+                    icon_name: 'provider-claude',
+                    active_account_id: 'claude:home',
+                    accounts: [
+                        {
+                            id: 'claude:work',
+                            label: 'work@example.com',
+                            is_active: false,
+                            state: 'active_ok',
+                            buckets: [
+                                {
+                                    id: 'wk',
+                                    label: 'Weekly',
+                                    short_label: 'wk',
+                                    is_primary: true,
+                                    used_percent: 98,
+                                    remaining_percent: 2,
+                                    resets_at_epoch: NOW + 86_400,
+                                },
+                            ],
+                        },
+                        {
+                            id: 'claude:home',
+                            label: 'home@example.com',
+                            is_active: true,
+                            state: 'active_ok',
+                            buckets: [
+                                {
+                                    id: 'wk',
+                                    label: 'Weekly',
+                                    short_label: 'wk',
+                                    is_primary: true,
+                                    used_percent: 20,
+                                    remaining_percent: 80,
+                                    resets_at_epoch: NOW + 172_800,
+                                },
+                            ],
+                        },
+                    ],
+                },
+                {
+                    id: 'codex',
+                    display_name: 'Codex',
+                    icon_name: 'provider-codex',
+                    active_account_id: 'codex:default',
+                    accounts: [
+                        {
+                            id: 'codex:default',
+                            label: 'dev@example.com',
+                            is_active: true,
+                            state: 'active_ok',
+                            buckets: [
+                                {
+                                    id: 'wk',
+                                    label: 'Weekly',
+                                    short_label: 'wk',
+                                    is_primary: true,
+                                    used_percent: 41,
+                                    remaining_percent: 59,
+                                    resets_at_epoch: NOW + 172_800,
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }, NOW).providers;
+    }
+
+    it('keeps active mode and compact-pills output equal to legacy behavior', () => {
+        const providers = makeMultiAccountProviders();
+        const defaultSummary = computePanelSummary(providers, 'used', ' | ');
+        const activeCompact = computePanelSummary(providers, 'used', ' | ', {
+            mode: 'active',
+            panelMode: 'compact-pills',
+        });
+
+        assert.equal(defaultSummary.pills.length, 2);
+        assert.equal(defaultSummary.maxUsedPercent, 41);
+        assert.equal(defaultSummary.severity, 'normal');
+        assert.equal(defaultSummary.fullText, 'Claude: 20% | Codex: 41%');
+        assert.equal(defaultSummary.pills[0].percentText, '20%');
+        assert.equal(defaultSummary.pills[1].percentText, '41%');
+
+        assert.equal(activeCompact.pills.length, 2);
+        assert.equal(activeCompact.maxUsedPercent, 41);
+        assert.equal(activeCompact.severity, 'normal');
+        assert.equal(activeCompact.fullText, 'Claude: 20% | Codex: 41%');
+        assert.equal(activeCompact.pills[0].percentText, '20%');
+        assert.equal(activeCompact.pills[0].label, '');
+        assert.equal(activeCompact.pills[0].tooltip, 'home@example.com');
+
+        assert.deepEqual(
+            PANEL_MODES.map(m => m.id),
+            ['icon', 'compact-pills', 'labeled-pills', 'full-text']
+        );
+        assert.deepEqual(
+            PANEL_MODES.map(m => m.shortLabel),
+            ['Icon', 'Pills', 'Labeled', 'Text']
+        );
+        assert.deepEqual(
+            PANEL_ACCOUNT_MODES.map(m => m.id),
+            ['active', 'all', 'selected']
+        );
+        assert.deepEqual(
+            PANEL_ACCOUNT_MODES.map(m => m.shortLabel),
+            ['Active', 'All', 'Selected']
+        );
+    });
+
+    it('shows two Claude pills in all mode and sets severity to the worst account', () => {
+        const providers = makeMultiAccountProviders();
+        const allSummary = computePanelSummary(providers, 'used', ' | ', {
+            mode: 'all',
+        });
+
+        assert.equal(allSummary.pills.length, 3);
+        assert.equal(allSummary.maxUsedPercent, 98);
+        assert.equal(allSummary.severity, 'critical');
+        assert.equal(allSummary.fullText, 'Claude (work): 98% | Claude (home): 20% | Codex: 41%');
+
+        assert.equal(allSummary.pills[0].id, 'claude::claude:work');
+        assert.equal(allSummary.pills[0].percentText, '98%');
+        assert.equal(allSummary.pills[0].severity, 'critical');
+
+        assert.equal(allSummary.pills[1].id, 'claude::claude:home');
+        assert.equal(allSummary.pills[1].percentText, '20%');
+        assert.equal(allSummary.pills[1].severity, 'normal');
+
+        assert.equal(allSummary.pills[2].id, 'codex::codex:default');
+        assert.equal(allSummary.pills[2].percentText, '41%');
+        assert.equal(allSummary.pills[2].severity, 'normal');
+    });
+
+    it('uses account tags for multi-account providers and short provider name for single-account providers in labeled-pills', () => {
+        const providers = makeMultiAccountProviders();
+        const entries = buildPanelEntries(providers, {mode: 'all'});
+        assert.equal(entries.length, 3);
+
+        const claudeEntries = entries.filter(e => e.providerId === 'claude');
+        const codexEntries = entries.filter(e => e.providerId === 'codex');
+        assert.equal(formatPanelPillLabel(claudeEntries[0], claudeEntries), 'work');
+        assert.equal(formatPanelPillLabel(claudeEntries[1], claudeEntries), 'home');
+        assert.equal(formatPanelPillLabel(codexEntries[0], codexEntries), 'Codex');
+
+        const labeled = computePanelSummary(providers, 'used', ' | ', {
+            mode: 'all',
+            panelMode: 'labeled-pills',
+        });
+        assert.equal(labeled.pills[0].label, 'work');
+        assert.equal(labeled.pills[1].label, 'home');
+        assert.equal(labeled.pills[2].label, 'Codex');
+
+        assert.equal(formatAccountShortTag({id: 'claude:work', label: 'work@example.com'}), 'work');
+        assert.equal(formatAccountShortTag({id: 'claude:team', label: 'TeamProfileName'}), 'TeamProf');
+    });
+
+    it('gives compact-pills a tooltip and an empty text label', () => {
+        const providers = makeMultiAccountProviders();
+        const compact = computePanelSummary(providers, 'used', ' | ', {
+            mode: 'all',
+            panelMode: 'compact-pills',
+        });
+
+        assert.equal(compact.pills.length, 3);
+        assert.equal(compact.pills[0].label, '');
+        assert.equal(compact.pills[0].tooltip, 'work@example.com');
+        assert.equal(compact.pills[1].label, '');
+        assert.equal(compact.pills[1].tooltip, 'home@example.com');
+        assert.equal(compact.pills[2].label, '');
+        assert.equal(compact.pills[2].tooltip, 'dev@example.com');
+    });
+
+    it('falls back to the active account when a selected ID does not match an account', () => {
+        const providers = makeMultiAccountProviders();
+        const fallbackEntries = buildPanelEntries(providers, {
+            mode: 'selected',
+            accountIds: ['claude:missing'],
+        });
+        assert.equal(fallbackEntries.length, 2);
+        assert.equal(fallbackEntries[0].accountId, 'claude:home');
+        assert.equal(fallbackEntries[0].usedPercent, 20);
+        assert.equal(fallbackEntries[1].accountId, 'codex:default');
+        assert.equal(fallbackEntries[1].usedPercent, 41);
+
+        const matchedSummary = computePanelSummary(providers, 'used', ' | ', {
+            mode: 'selected',
+            accountIds: ['claude:work'],
+        });
+        assert.equal(matchedSummary.pills.length, 2);
+        assert.equal(matchedSummary.pills[0].id, 'claude::claude:work');
+        assert.equal(matchedSummary.pills[0].percentText, '98%');
+        assert.equal(matchedSummary.pills[1].id, 'codex::codex:default');
+        assert.equal(matchedSummary.pills[1].percentText, '41%');
+
+        const clipAll = formatClipboardSummary(providers, 'used', NOW, {mode: 'all'});
+        assert.match(clipAll, /- Claude \(work\): Weekly 98% used/);
+        assert.match(clipAll, /- Claude \(home\): Weekly 20% used/);
+        assert.match(clipAll, /- Codex: Weekly 41% used/);
+
+        // Passive cached accounts set isPassive, signed_out shows '!', and empty non-signed-out accounts are skipped
+        const mixedProviders = [
+            {
+                id: 'claude',
+                display_name: 'Claude',
+                icon_name: 'provider-claude',
+                active_account_id: 'claude:work',
+                accounts: [
+                    {
+                        id: 'claude:work',
+                        label: 'work@example.com',
+                        is_active: true,
+                        state: 'passive_cached',
+                        buckets: [{id: 'wk', is_primary: true, used_percent: 33, remaining_percent: 67}],
+                    },
+                    {
+                        id: 'claude:empty',
+                        label: 'empty@example.com',
+                        is_active: false,
+                        state: 'active_ok',
+                        buckets: [],
+                    },
+                    {
+                        id: 'claude:out',
+                        label: 'out@example.com',
+                        is_active: false,
+                        state: 'signed_out',
+                        buckets: [],
+                    },
+                ],
+            },
+        ];
+        const mixedSummary = computePanelSummary(mixedProviders, 'used', ' | ', {mode: 'all'});
+        assert.equal(mixedSummary.pills.length, 2);
+        assert.equal(mixedSummary.pills[0].id, 'claude::claude:work');
+        assert.equal(mixedSummary.pills[0].isPassive, true);
+        assert.equal(mixedSummary.pills[0].percentText, '33%');
+        assert.equal(mixedSummary.pills[1].id, 'claude::claude:out');
+        assert.equal(mixedSummary.pills[1].percentText, '!');
+        assert.equal(mixedSummary.pills[1].severity, 'critical');
+        assert.equal(mixedSummary.fullText, 'Claude (work): 33% | Claude (out): AUTH');
+    });
 });
 
 // ---------------------------------------------------------------------------
@@ -859,6 +1114,742 @@ describe('evaluateQuotaNotificationStep', () => {
             }),
             []
         );
+    });
+
+    it('sends alerts for a non-active account when the panel shows that account', () => {
+        function makeTwoAccountClaudeReport(workUsed, homeUsed, workReset = WIN_1) {
+            return {
+                schema_version: 2,
+                updated_at_epoch: NOW,
+                providers: [
+                    {
+                        id: 'claude',
+                        active_account_id: 'claude:home',
+                        accounts: [
+                            {
+                                id: 'claude:work',
+                                label: 'work@example.com',
+                                is_active: false,
+                                state: 'active_ok',
+                                buckets: [
+                                    {
+                                        id: 'wk',
+                                        short_label: 'wk',
+                                        is_primary: true,
+                                        used_percent: workUsed,
+                                        resets_at_epoch: workReset,
+                                    },
+                                ],
+                            },
+                            {
+                                id: 'claude:home',
+                                label: 'home@example.com',
+                                is_active: true,
+                                state: 'active_ok',
+                                buckets: [
+                                    {
+                                        id: 'wk',
+                                        short_label: 'wk',
+                                        is_primary: true,
+                                        used_percent: homeUsed,
+                                        resets_at_epoch: WIN_1,
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
+            };
+        }
+
+        // In 'active' mode, non-active claude:work crossing 90% does not emit an alert
+        const activeStates = new Map();
+        evaluateQuotaNotificationStep(activeStates, makeTwoAccountClaudeReport(70, 20), {
+            isInitialHydration: true,
+            nowEpoch: NOW,
+            mode: 'active',
+        });
+        assert.deepEqual(
+            evaluateQuotaNotificationStep(activeStates, makeTwoAccountClaudeReport(94, 20), {
+                nowEpoch: NOW + 60,
+                mode: 'active',
+                notifyOnCritical: true,
+            }),
+            []
+        );
+
+        // In 'all' mode, non-active claude:work crossing 90% emits a critical alert
+        const allStates = new Map();
+        evaluateQuotaNotificationStep(allStates, makeTwoAccountClaudeReport(70, 20), {
+            isInitialHydration: true,
+            nowEpoch: NOW,
+            mode: 'all',
+        });
+        const allAlerts = evaluateQuotaNotificationStep(allStates, makeTwoAccountClaudeReport(94, 20), {
+            nowEpoch: NOW + 60,
+            mode: 'all',
+            notifyOnCritical: true,
+        });
+        assert.equal(allAlerts.length, 1);
+        assert.equal(allAlerts[0].kind, 'critical');
+        assert.equal(allAlerts[0].providerId, 'claude');
+
+        // In 'selected' mode with claude:work selected, non-active claude:work emits warning and reset alerts
+        const selectedStates = new Map();
+        evaluateQuotaNotificationStep(selectedStates, makeTwoAccountClaudeReport(75, 20), {
+            isInitialHydration: true,
+            nowEpoch: NOW,
+            mode: 'selected',
+            accountIds: ['claude:work'],
+        });
+        const selectedWarn = evaluateQuotaNotificationStep(selectedStates, makeTwoAccountClaudeReport(85, 20), {
+            nowEpoch: NOW + 60,
+            mode: 'selected',
+            accountIds: ['claude:work'],
+            notifyOnWarning: true,
+        });
+        assert.equal(selectedWarn.length, 1);
+        assert.equal(selectedWarn[0].kind, 'warning');
+
+        const selectedReset = evaluateQuotaNotificationStep(selectedStates, makeTwoAccountClaudeReport(0, 20, WIN_2), {
+            nowEpoch: WIN_1 + 10,
+            mode: 'selected',
+            accountIds: ['claude:work'],
+            notifyOnReset: true,
+        });
+        assert.equal(selectedReset.length, 1);
+        assert.equal(selectedReset[0].kind, 'reset');
+    });
+});
+
+// ---------------------------------------------------------------------------
+// 6b. Strict Parity with Legacy `origin/main` in `'active'` Mode
+// ---------------------------------------------------------------------------
+
+function legacyFormatClipboardSummary(
+    visibleProviders,
+    metricMode = 'used',
+    nowEpoch = Math.floor(Date.now() / 1000)
+) {
+    const providers = Array.isArray(visibleProviders) ? visibleProviders.filter(Boolean) : [];
+    if (providers.length === 0)
+        return 'AI Agent Usage: No active AI agents detected';
+
+    const isRemaining = metricMode === 'remaining';
+    const modeSuffix = isRemaining ? 'left' : 'used';
+    const lines = [`AI Agent Usage (${isRemaining ? '% remaining' : '% used'})`];
+
+    for (const prov of providers) {
+        const name = prov.display_name || PROVIDER_BY_ID[prov.id]?.displayName || prov.id || 'Agent';
+        const activeAcc = getActiveAccount(prov);
+        const tier = prov.plan_badge || activeAcc?.plan_tier || '';
+        const head = tier ? `${name} (${tier})` : name;
+
+        if (activeAcc?.state === 'signed_out') {
+            lines.push(`- ${head}: Signed out`);
+            continue;
+        }
+
+        const buckets = Array.isArray(activeAcc?.buckets) ? activeAcc.buckets : [];
+        if (buckets.length > 0) {
+            const parts = buckets.map(b => {
+                const m = formatBucketMetric(b, metricMode);
+                const title = formatBucketDisplayLabel(b);
+                const reset = formatResetCountdown(b.resets_at_epoch, nowEpoch, {prefix: false});
+                const resetSuffix = reset && reset !== 'now' ? ` (resets in ${reset})` : '';
+                return `${title} ${m.percentText} ${modeSuffix}${resetSuffix}`;
+            });
+            const creditsNote = formatCompactAccountExtraNote(activeAcc, Boolean(tier));
+            if (creditsNote)
+                parts.push(creditsNote);
+            lines.push(`- ${head}: ${parts.join(' · ')}`);
+            continue;
+        }
+
+        if (typeof prov.primary_used_percent === 'number') {
+            const m = formatBucketMetric({
+                used_percent: prov.primary_used_percent,
+                remaining_percent: prov.primary_remaining_percent,
+            }, metricMode);
+            const reset = formatResetCountdown(prov.primary_reset_epoch, nowEpoch, {prefix: false});
+            const resetSuffix = reset && reset !== 'now' ? ` (resets in ${reset})` : '';
+            lines.push(`- ${head}: ${m.percentText} ${modeSuffix}${resetSuffix}`);
+            continue;
+        }
+
+        const fallback = formatCreditsSummary(activeAcc?.credits) ||
+            activeAcc?.extra_info ||
+            activeAcc?.error ||
+            activeAcc?.status_note ||
+            'Idle';
+        lines.push(`- ${head}: ${fallback}`);
+    }
+
+    return lines.join('\n');
+}
+
+function legacyComputePanelSummary(visibleProviders, metricMode = 'used', separator = ' | ') {
+    const providers = Array.isArray(visibleProviders) ? visibleProviders : [];
+    let maxUsedPercent = 0;
+    let hasAuthError = false;
+    const pills = [];
+    const textSegments = [];
+
+    for (const prov of providers) {
+        const activeAcc = getActiveAccount(prov);
+        if (activeAcc?.state === 'signed_out')
+            hasAuthError = true;
+
+        const hasPrimary = typeof prov.primary_used_percent === 'number';
+        if (hasPrimary) {
+            const used = clampPercent(prov.primary_used_percent);
+            const rem = typeof prov.primary_remaining_percent === 'number'
+                ? clampPercent(prov.primary_remaining_percent)
+                : Math.max(0, 100 - used);
+            const displayPercent = metricMode === 'remaining' ? rem : used;
+            const itemSeverity = getSeverityForUsedPercent(used);
+            maxUsedPercent = Math.max(maxUsedPercent, used);
+
+            pills.push({
+                id: prov.id,
+                displayName: prov.display_name,
+                iconName: prov.icon_name,
+                usedPercent: used,
+                displayPercent,
+                percentText: `${displayPercent}%`,
+                severity: itemSeverity,
+            });
+            textSegments.push(`${prov.display_name}: ${displayPercent}%`);
+        } else if (activeAcc?.state === 'signed_out') {
+            pills.push({
+                id: prov.id,
+                displayName: prov.display_name,
+                iconName: prov.icon_name,
+                usedPercent: null,
+                displayPercent: null,
+                percentText: '!',
+                severity: 'critical',
+            });
+            textSegments.push(`${prov.display_name}: AUTH`);
+        }
+    }
+
+    let severity = getSeverityForUsedPercent(maxUsedPercent);
+    if (hasAuthError && severity === 'normal')
+        severity = 'warning';
+    if (hasAuthError && providers.length > 0 && pills.every(p => p.usedPercent === null))
+        severity = 'critical';
+
+    const fullText = textSegments.length > 0 ? textSegments.join(separator) : 'Agents: —';
+
+    return {
+        maxUsedPercent,
+        activeCount: providers.length,
+        hasAuthError,
+        severity,
+        pills,
+        fullText,
+    };
+}
+
+function legacyEvaluateQuotaNotificationStep(
+    bucketStates,
+    report,
+    {
+        isInitialHydration = false,
+        nowEpoch = Math.floor(Date.now() / 1000),
+        hiddenProviderIds = [],
+        providerOrder = DEFAULT_PROVIDER_ORDER,
+        notifyOnWarning = false,
+        notifyOnCritical = true,
+        notifyOnReset = true,
+    } = {}
+) {
+    if (!(bucketStates instanceof Map) || !report || typeof report !== 'object')
+        return [];
+
+    const normalized = normalizeStatusReport(report, nowEpoch);
+    const allProviders = sortProvidersByOrder(normalized.providers ?? [], providerOrder);
+    const visibleSet = new Set(
+        filterVisibleProviders(allProviders, hiddenProviderIds).map(p => p.id)
+    );
+
+    const emitted = [];
+
+    for (const prov of allProviders) {
+        const accounts = Array.isArray(prov?.accounts) ? prov.accounts : [];
+        const activeAcc = getActiveAccount(prov);
+
+        for (const acc of accounts) {
+            if (!acc || acc.state === 'signed_out')
+                continue;
+
+            const primaryBucket =
+                acc.buckets?.find(b => b.is_primary) ?? acc.buckets?.[0] ?? null;
+            if (!primaryBucket)
+                continue;
+
+            const bucketId = primaryBucket.id || primaryBucket.short_label || 'primary';
+            const key = `${prov.id}::${acc.id || 'default'}::${bucketId}`;
+            const usedPercent = clampPercent(primaryBucket.used_percent ?? 0);
+            const resetsAtEpoch =
+                typeof primaryBucket.resets_at_epoch === 'number' &&
+                Number.isFinite(primaryBucket.resets_at_epoch) &&
+                primaryBucket.resets_at_epoch > 0
+                    ? primaryBucket.resets_at_epoch
+                    : null;
+            const windowToken = resetsAtEpoch !== null ? String(resetsAtEpoch) : 'static';
+
+            const isTargetActive = activeAcc === acc && visibleSet.has(prov.id);
+            const prev = bucketStates.get(key);
+
+            if (isInitialHydration || !prev) {
+                bucketStates.set(key, {
+                    usedPercent,
+                    resetsAtEpoch,
+                    notifiedWarningWindow: usedPercent >= 80 ? windowToken : null,
+                    notifiedCriticalWindow: usedPercent >= 90 ? windowToken : null,
+                });
+                continue;
+            }
+
+            let notifiedWarningWindow = prev.notifiedWarningWindow ?? null;
+            let notifiedCriticalWindow = prev.notifiedCriticalWindow ?? null;
+
+            const hasPrevReset =
+                typeof prev.resetsAtEpoch === 'number' && prev.resetsAtEpoch > 0;
+            const hasCurrReset = resetsAtEpoch !== null;
+            const resetByClock = hasPrevReset && nowEpoch >= (prev.resetsAtEpoch - 60);
+            const resetByNewWindow =
+                hasPrevReset &&
+                hasCurrReset &&
+                resetsAtEpoch > (prev.resetsAtEpoch + 60);
+
+            if (hasPrevReset && hasCurrReset && resetsAtEpoch > (prev.resetsAtEpoch + 60)) {
+                notifiedWarningWindow = null;
+                notifiedCriticalWindow = null;
+            }
+
+            const bucketLabel = formatBucketDisplayLabel(primaryBucket);
+
+            if (prev.usedPercent >= 80 && usedPercent < 20 && (resetByClock || resetByNewWindow)) {
+                notifiedWarningWindow = null;
+                notifiedCriticalWindow = null;
+                if (isTargetActive && notifyOnReset) {
+                    emitted.push({
+                        kind: 'reset',
+                        providerId: prov.id,
+                        title: `${prov.display_name} Quota Reset`,
+                        body: `${bucketLabel} quota is fresh again (${usedPercent}% used)`,
+                        urgency: 'normal',
+                    });
+                }
+            } else if (prev.usedPercent < 90 && usedPercent >= 90) {
+                if (isTargetActive && notifiedCriticalWindow !== windowToken) {
+                    notifiedCriticalWindow = windowToken;
+                    notifiedWarningWindow = windowToken;
+                    if (notifyOnCritical) {
+                        const countdown = formatResetCountdown(resetsAtEpoch, nowEpoch, {
+                            prefix: false,
+                        });
+                        const suffix =
+                            countdown && countdown !== 'now' ? ` (resets in ${countdown})` : '';
+                        emitted.push({
+                            kind: 'critical',
+                            providerId: prov.id,
+                            title: `${prov.display_name} Quota Critical (${usedPercent}%)`,
+                            body: `${bucketLabel} usage reached ${usedPercent}%${suffix}`,
+                            urgency: 'critical',
+                        });
+                    }
+                }
+            } else if (prev.usedPercent < 80 && usedPercent >= 80 && usedPercent < 90) {
+                if (isTargetActive && notifiedWarningWindow !== windowToken) {
+                    notifiedWarningWindow = windowToken;
+                    if (notifyOnWarning) {
+                        const countdown = formatResetCountdown(resetsAtEpoch, nowEpoch, {
+                            prefix: false,
+                        });
+                        const suffix =
+                            countdown && countdown !== 'now' ? ` (resets in ${countdown})` : '';
+                        emitted.push({
+                            kind: 'warning',
+                            providerId: prov.id,
+                            title: `${prov.display_name} Quota Warning`,
+                            body: `${bucketLabel} usage reached ${usedPercent}%${suffix}`,
+                            urgency: 'normal',
+                        });
+                    }
+                }
+            }
+
+            bucketStates.set(key, {
+                usedPercent,
+                resetsAtEpoch,
+                notifiedWarningWindow,
+                notifiedCriticalWindow,
+            });
+        }
+    }
+
+    return emitted;
+}
+
+function projectSummaryForComparison(summary) {
+    return {
+        maxUsedPercent: summary.maxUsedPercent,
+        severity: summary.severity,
+        fullText: summary.fullText,
+        pillsLength: summary.pills.length,
+        pills: summary.pills.map(p => ({
+            displayName: p.displayName,
+            iconName: p.iconName,
+            usedPercent: p.usedPercent,
+            displayPercent: p.displayPercent,
+            percentText: p.percentText,
+            severity: p.severity,
+        })),
+    };
+}
+
+describe('Active mode parity with legacy main implementation', () => {
+    const NOW = 1_760_000_000;
+    const WIN_1 = NOW + 172_800;
+    const WIN_2 = WIN_1 + 604_800;
+
+    function buildParityReport({
+        errorUsed = 72,
+        passiveUsed = 33,
+        secondActiveUsed = 64,
+        fallbackActiveUsed = 81,
+        resetEpoch = WIN_1,
+    } = {}) {
+        return {
+            schema_version: 2,
+            updated_at_epoch: NOW,
+            providers: [
+                // 1. Active account that is signed_out
+                {
+                    id: 'claude',
+                    display_name: 'Claude',
+                    icon_name: 'provider-claude',
+                    plan_badge: 'Max 20x',
+                    active_account_id: 'claude:out',
+                    primary_used_percent: null,
+                    primary_remaining_percent: null,
+                    accounts: [
+                        {
+                            id: 'claude:out',
+                            label: 'out@example.com',
+                            plan_tier: 'Pro',
+                            is_active: true,
+                            state: 'signed_out',
+                            buckets: [],
+                        },
+                    ],
+                },
+                // 2. Provider with accounts: [] and a primary_used_percent
+                {
+                    id: 'codex',
+                    display_name: 'Codex',
+                    icon_name: 'provider-codex',
+                    plan_badge: 'Plus',
+                    primary_used_percent: 42,
+                    primary_remaining_percent: 58,
+                    primary_reset_epoch: resetEpoch,
+                    accounts: [],
+                },
+                // 3. Active account in error state with buckets (and distinct plan_badge vs plan_tier)
+                {
+                    id: 'grok',
+                    display_name: 'Grok',
+                    icon_name: 'provider-grok',
+                    plan_badge: 'SuperGrok',
+                    active_account_id: 'grok:err',
+                    primary_used_percent: null,
+                    primary_remaining_percent: null,
+                    accounts: [
+                        {
+                            id: 'grok:err',
+                            label: 'err@example.com',
+                            plan_tier: 'Basic',
+                            is_active: true,
+                            state: 'error',
+                            error: 'HTTP 502',
+                            buckets: [
+                                {
+                                    id: 'wk',
+                                    label: 'Weekly',
+                                    short_label: 'wk',
+                                    is_primary: true,
+                                    used_percent: errorUsed,
+                                    remaining_percent: 100 - errorUsed,
+                                    resets_at_epoch: resetEpoch,
+                                },
+                            ],
+                        },
+                    ],
+                },
+                // 4. A passive_cached active account
+                {
+                    id: 'cursor',
+                    display_name: 'Cursor',
+                    icon_name: 'provider-cursor',
+                    active_account_id: 'cursor:passive',
+                    primary_used_percent: passiveUsed,
+                    primary_remaining_percent: 100 - passiveUsed,
+                    primary_reset_epoch: resetEpoch,
+                    accounts: [
+                        {
+                            id: 'cursor:passive',
+                            label: 'passive@example.com',
+                            plan_tier: 'Pro',
+                            is_active: true,
+                            state: 'passive_cached',
+                            is_stale: true,
+                            buckets: [
+                                {
+                                    id: '31d',
+                                    label: 'Monthly',
+                                    short_label: '31d',
+                                    is_primary: true,
+                                    used_percent: passiveUsed,
+                                    remaining_percent: 100 - passiveUsed,
+                                    resets_at_epoch: resetEpoch,
+                                },
+                            ],
+                        },
+                    ],
+                },
+                // 5. A rate_limited account with no buckets
+                {
+                    id: 'agy',
+                    display_name: 'Antigravity',
+                    icon_name: 'provider-agy',
+                    active_account_id: 'agy:rl',
+                    primary_used_percent: null,
+                    primary_remaining_percent: null,
+                    accounts: [
+                        {
+                            id: 'agy:rl',
+                            label: 'rl@example.com',
+                            is_active: true,
+                            state: 'rate_limited',
+                            status_note: 'HTTP 429 backoff',
+                            buckets: [],
+                        },
+                    ],
+                },
+                // 6. A hidden provider
+                {
+                    id: 'openrouter',
+                    display_name: 'OpenRouter',
+                    icon_name: 'provider-openrouter',
+                    active_account_id: 'openrouter:main',
+                    primary_used_percent: 95,
+                    primary_remaining_percent: 5,
+                    primary_reset_epoch: resetEpoch,
+                    accounts: [
+                        {
+                            id: 'openrouter:main',
+                            label: 'router@example.com',
+                            is_active: true,
+                            state: 'active_ok',
+                            buckets: [
+                                {
+                                    id: '31d',
+                                    label: 'Monthly',
+                                    short_label: '31d',
+                                    is_primary: true,
+                                    used_percent: 95,
+                                    remaining_percent: 5,
+                                    resets_at_epoch: resetEpoch,
+                                },
+                            ],
+                        },
+                    ],
+                },
+                // 7. Two accounts on one provider where the second account is active
+                {
+                    id: 'copilot',
+                    display_name: 'GitHub Copilot',
+                    icon_name: 'provider-copilot',
+                    plan_badge: 'Enterprise',
+                    active_account_id: 'copilot:second',
+                    primary_used_percent: secondActiveUsed,
+                    primary_remaining_percent: 100 - secondActiveUsed,
+                    primary_reset_epoch: resetEpoch,
+                    accounts: [
+                        {
+                            id: 'copilot:first',
+                            label: 'first@example.com',
+                            plan_tier: 'Free',
+                            is_active: false,
+                            state: 'active_ok',
+                            buckets: [
+                                {
+                                    id: '31d',
+                                    label: 'Premium Requests',
+                                    short_label: '31d',
+                                    is_primary: true,
+                                    used_percent: 15,
+                                    remaining_percent: 85,
+                                    resets_at_epoch: resetEpoch,
+                                },
+                            ],
+                        },
+                        {
+                            id: 'copilot:second',
+                            label: 'second@example.com',
+                            plan_tier: 'Pro+',
+                            is_active: true,
+                            state: 'active_ok',
+                            buckets: [
+                                {
+                                    id: '31d',
+                                    label: 'Premium Requests',
+                                    short_label: '31d',
+                                    is_primary: true,
+                                    used_percent: secondActiveUsed,
+                                    remaining_percent: 100 - secondActiveUsed,
+                                    resets_at_epoch: resetEpoch,
+                                },
+                            ],
+                        },
+                    ],
+                },
+                // 8. A provider with an active_account_id that does not agree with an account
+                {
+                    id: 'gemini',
+                    display_name: 'Gemini CLI',
+                    icon_name: 'provider-gemini',
+                    active_account_id: 'gemini:unknown-id',
+                    primary_used_percent: fallbackActiveUsed,
+                    primary_remaining_percent: 100 - fallbackActiveUsed,
+                    primary_reset_epoch: resetEpoch,
+                    accounts: [
+                        {
+                            id: 'gemini:first',
+                            label: 'first@example.com',
+                            is_active: false,
+                            state: 'active_ok',
+                            buckets: [
+                                {
+                                    id: '24h',
+                                    label: 'Daily',
+                                    short_label: '24h',
+                                    is_primary: true,
+                                    used_percent: 12,
+                                    remaining_percent: 88,
+                                    resets_at_epoch: resetEpoch,
+                                },
+                            ],
+                        },
+                        {
+                            id: 'gemini:second',
+                            label: 'second@example.com',
+                            is_active: true,
+                            state: 'active_ok',
+                            buckets: [
+                                {
+                                    id: '24h',
+                                    label: 'Daily',
+                                    short_label: '24h',
+                                    is_primary: true,
+                                    used_percent: fallbackActiveUsed,
+                                    remaining_percent: 100 - fallbackActiveUsed,
+                                    resets_at_epoch: resetEpoch,
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        };
+    }
+
+    it('matches legacy computePanelSummary and formatClipboardSummary across all fixture combinations in used and remaining modes', () => {
+        const rawReport = buildParityReport();
+        const normalized = normalizeStatusReport(rawReport, NOW);
+        const hiddenIds = ['openrouter'];
+        const visibleRaw = filterVisibleProviders(rawReport.providers, hiddenIds);
+        const visibleNormalized = filterVisibleProviders(normalized.providers, hiddenIds);
+
+        for (const providers of [visibleRaw, visibleNormalized]) {
+            for (const metricMode of ['used', 'remaining']) {
+                const legacySummary = legacyComputePanelSummary(providers, metricMode, ' | ');
+                const newSummary = computePanelSummary(providers, metricMode, ' | ');
+
+                assert.deepEqual(
+                    projectSummaryForComparison(newSummary),
+                    projectSummaryForComparison(legacySummary)
+                );
+                for (let i = 0; i < legacySummary.pills.length; i++)
+                    assert.equal(newSummary.pills[i].providerId, legacySummary.pills[i].id);
+
+                const legacyClip = legacyFormatClipboardSummary(providers, metricMode, NOW);
+                const newClip = formatClipboardSummary(providers, metricMode, NOW);
+                assert.deepEqual(newClip, legacyClip);
+            }
+        }
+    });
+
+    it('matches legacy evaluateQuotaNotificationStep alerts and bucketStates across a 3-report sequence', () => {
+        const hiddenIds = ['openrouter'];
+        const step1Report = buildParityReport({
+            errorUsed: 72,
+            passiveUsed: 33,
+            secondActiveUsed: 64,
+            fallbackActiveUsed: 78,
+            resetEpoch: WIN_1,
+        });
+        const step2Report = buildParityReport({
+            errorUsed: 91,
+            passiveUsed: 84,
+            secondActiveUsed: 93,
+            fallbackActiveUsed: 85,
+            resetEpoch: WIN_1,
+        });
+        const step3Report = buildParityReport({
+            errorUsed: 5,
+            passiveUsed: 10,
+            secondActiveUsed: 0,
+            fallbackActiveUsed: 12,
+            resetEpoch: WIN_2,
+        });
+
+        const legacyStates = new Map();
+        const newStates = new Map();
+
+        const steps = [
+            {report: step1Report, isInitialHydration: true, nowEpoch: NOW},
+            {report: step2Report, isInitialHydration: false, nowEpoch: NOW + 60},
+            {report: step3Report, isInitialHydration: false, nowEpoch: WIN_1 + 10},
+        ];
+
+        for (const step of steps) {
+            const opts = {
+                isInitialHydration: step.isInitialHydration,
+                nowEpoch: step.nowEpoch,
+                hiddenProviderIds: hiddenIds,
+                notifyOnWarning: true,
+                notifyOnCritical: true,
+                notifyOnReset: true,
+            };
+            const legacyAlerts = legacyEvaluateQuotaNotificationStep(
+                legacyStates,
+                step.report,
+                opts
+            );
+            const newAlerts = evaluateQuotaNotificationStep(
+                newStates,
+                step.report,
+                opts
+            );
+
+            assert.deepEqual(newAlerts, legacyAlerts);
+            assert.deepEqual([...newStates.entries()], [...legacyStates.entries()]);
+        }
     });
 });
 
@@ -1259,6 +2250,19 @@ describe('EGO Review Compliance, Import-Scope Purity, Lifecycle & POT Sync', () 
         }
 
         assert.equal(seenMsgIds.has('Quit Agent Status'), false, 'Obsolete Quit Agent Status must be absent');
+
+        for (const item of [...PANEL_MODES, ...PANEL_ACCOUNT_MODES]) {
+            assert.equal(
+                seenMsgIds.has(item.label),
+                true,
+                `Constant label missing from po/agent-status.pot: ${JSON.stringify(item.label)}`
+            );
+            assert.equal(
+                seenMsgIds.has(item.shortLabel),
+                true,
+                `Constant shortLabel missing from po/agent-status.pot: ${JSON.stringify(item.shortLabel)}`
+            );
+        }
 
         for (const filePath of allExtJsFiles) {
             const rel = path.relative(REPO_ROOT, filePath);

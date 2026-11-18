@@ -7,7 +7,10 @@ import {
     connectInteractiveButton,
     createHBox,
     createVBox,
+    getSettingStringSafe,
+    getSettingStrvSafe,
     setScrollChild,
+    setSettingStrvSafe,
 } from '../compat.js';
 import {
     computeBucketPace,
@@ -29,7 +32,7 @@ import {
  * Reusable multi-account comparison row inside the Provider Drill-Down switcher table.
  */
 class AccountSwitcherRow {
-    constructor({isMenuOpen, onActivate}) {
+    constructor({isMenuOpen, onActivate, onToggleTopBar}) {
         this._isMenuOpen = isMenuOpen;
         this._accountId = '';
         this._miniBucketPool = [];
@@ -88,22 +91,61 @@ class AccountSwitcherRow {
         inner.add_child(this._miniBarsCol);
         inner.add_child(this._passiveNoteLabel);
 
-        this.actor = new St.Button({
+        this.selectButton = new St.Button({
             style_class: 'gas-account-row',
             can_focus: true,
             track_hover: true,
             x_expand: true,
             child: inner,
         });
+        connectInteractiveButton(this.selectButton, () => {
+            if (this._accountId)
+                onActivate(this._accountId);
+        });
+
+        this._topBarRow = createHBox({
+            style_class: 'gas-account-topbar-row',
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+            visible: false,
+        });
+        const topBarTitle = new St.Label({
+            text: _('Show in top bar'),
+            x_expand: true,
+            x_align: Clutter.ActorAlign.START,
+            y_align: Clutter.ActorAlign.CENTER,
+            style_class: 'gas-option-switch-label',
+        });
+        this._topBarPillLabel = new St.Label({
+            text: _('Off'),
+            y_align: Clutter.ActorAlign.CENTER,
+            style_class: 'gas-toggle-pill-text',
+        });
+        this.topBarButton = new St.Button({
+            style_class: 'gas-toggle-pill',
+            can_focus: true,
+            track_hover: true,
+            y_align: Clutter.ActorAlign.CENTER,
+            accessible_name: _('Show in top bar'),
+            child: this._topBarPillLabel,
+        });
+        connectInteractiveButton(this.topBarButton, () => {
+            if (this._accountId)
+                onToggleTopBar?.(this._accountId);
+        });
+        this._topBarRow.add_child(topBarTitle);
+        this._topBarRow.add_child(this.topBarButton);
+
+        this.actor = createVBox({
+            style_class: 'gas-account-item',
+            x_expand: true,
+        });
+        this.actor.add_child(this.selectButton);
+        this.actor.add_child(this._topBarRow);
         this._actorDisposed = false;
         this._destroySigId = this.actor.connect('destroy', () => {
             this._actorDisposed = true;
             this._destroySigId = 0;
-        });
-
-        connectInteractiveButton(this.actor, () => {
-            if (this._accountId)
-                onActivate(this._accountId);
         });
     }
 
@@ -149,6 +191,8 @@ class AccountSwitcherRow {
         providerDisplayName,
         isSelected,
         showSourceDisambiguator,
+        showTopBarToggle = false,
+        isShownInTopBar = false,
         metricMode,
         themeId,
         nowEpoch,
@@ -157,9 +201,16 @@ class AccountSwitcherRow {
         this._checkLabel.set_text(isSelected ? '✓' : '');
 
         if (isSelected)
-            this.actor.add_style_class_name('is-selected');
+            this.selectButton.add_style_class_name('is-selected');
         else
-            this.actor.remove_style_class_name('is-selected');
+            this.selectButton.remove_style_class_name('is-selected');
+
+        this._topBarRow.visible = Boolean(showTopBarToggle);
+        this._topBarPillLabel.set_text(isShownInTopBar ? _('On') : _('Off'));
+        if (isShownInTopBar)
+            this.topBarButton.add_style_class_name('is-active');
+        else
+            this.topBarButton.remove_style_class_name('is-active');
 
         this._nameLabel.set_text(account.label || account.id);
         if (showSourceDisambiguator && account.source_label) {
@@ -244,6 +295,7 @@ class AccountSwitcherRow {
  */
 export class ProviderDetailPage {
     constructor({
+        settings = null,
         getIcon,
         isMenuOpen,
         tooltips = null,
@@ -253,6 +305,7 @@ export class ProviderDetailPage {
         onOpenDashboard,
         onOpenPreferences,
     }) {
+        this._settings = settings;
         this._getIcon = getIcon;
         this._isMenuOpen = isMenuOpen;
         this._tooltips = tooltips;
@@ -609,11 +662,24 @@ export class ProviderDetailPage {
                     this._pinnedDefaultIds.delete(this._currentProviderId);
                     this._onSelectAccount(this._currentProviderId, accountId);
                 },
+                onToggleTopBar: accountId => {
+                    this._toggleTopBarAccount(accountId);
+                },
             });
             this._accountRowsBox.add_child(rowWidget.actor);
             this._accountRowPool.push(rowWidget);
         }
         return this._accountRowPool[index];
+    }
+
+    _toggleTopBarAccount(accountId) {
+        if (!this._settings || !accountId)
+            return;
+        const current = getSettingStrvSafe(this._settings, 'panel-account-ids', []);
+        const next = current.includes(accountId)
+            ? current.filter(id => id !== accountId)
+            : [...current, accountId];
+        setSettingStrvSafe(this._settings, 'panel-account-ids', next);
     }
 
     _ensureSignedOutSlot(index) {
@@ -682,9 +748,26 @@ export class ProviderDetailPage {
         return this._signedOutRowPool[index];
     }
 
-    update({provider, reportUpdatedEpoch, metricMode, themeId, nowEpoch}) {
+    update({
+        provider,
+        reportUpdatedEpoch,
+        metricMode,
+        themeId,
+        nowEpoch,
+        panelAccountMode,
+        panelAccountIds,
+    }) {
         if (!provider)
             return;
+
+        const effectiveAccountMode =
+            panelAccountMode ??
+            getSettingStringSafe(this._settings, 'panel-account-mode', 'active');
+        const effectiveAccountIds = Array.isArray(panelAccountIds)
+            ? panelAccountIds
+            : getSettingStrvSafe(this._settings, 'panel-account-ids', []);
+        const selectedAccountIdSet = new Set(effectiveAccountIds);
+        const showTopBarToggle = effectiveAccountMode === 'selected';
 
         this._currentProviderId = provider.id;
         this._currentDashboardUrl = provider.dashboard_url || null;
@@ -801,6 +884,8 @@ export class ProviderDetailPage {
                 providerDisplayName: displayName,
                 isSelected,
                 showSourceDisambiguator: (labelCounts.get(acc.label) || 0) > 1,
+                showTopBarToggle,
+                isShownInTopBar: selectedAccountIdSet.has(acc.id),
                 metricMode,
                 themeId,
                 nowEpoch,
@@ -842,8 +927,11 @@ export class ProviderDetailPage {
         if (this._sysDefaultBtn?.visible)
             focusables.push(this._sysDefaultBtn);
         for (const rowWidget of this._accountRowPool) {
-            if (rowWidget.actor?.visible)
-                focusables.push(rowWidget.actor);
+            if (rowWidget.actor?.visible) {
+                focusables.push(rowWidget.selectButton ?? rowWidget.actor);
+                if (rowWidget._topBarRow?.visible && rowWidget.topBarButton)
+                    focusables.push(rowWidget.topBarButton);
+            }
         }
         if (focusables.length === 0)
             return Clutter.EVENT_PROPAGATE;

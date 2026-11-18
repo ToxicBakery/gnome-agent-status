@@ -68,6 +68,11 @@
     icon-size: 14px;
 }
 
+.gas-panel-pill-text {
+    font-weight: 500;
+    font-size: 0.90em;
+}
+
 .gas-panel-pill-label,
 .gas-panel-full-text {
     font-weight: 600;
@@ -608,6 +613,15 @@
 
 .gas-account-rows-box {
     spacing: 2px;
+}
+
+.gas-account-item {
+    spacing: 2px;
+}
+
+.gas-account-topbar-row {
+    padding: 2px 8px 4px 24px;
+    spacing: 8px;
 }
 
 .gas-account-row {

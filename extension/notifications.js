@@ -6,6 +6,7 @@ import * as MessageTray from 'resource:///org/gnome/shell/ui/messageTray.js';
 
 import {
     getSettingBoolSafe,
+    getSettingStringSafe,
     getSettingStrvSafe,
 } from './compat.js';
 import {
@@ -99,6 +100,16 @@ export class QuotaNotificationTracker {
         const notifyOnWarning = getSettingBoolSafe(this._settings, 'notify-on-warning', false);
         const notifyOnCritical = getSettingBoolSafe(this._settings, 'notify-on-critical', true);
         const notifyOnReset = getSettingBoolSafe(this._settings, 'notify-on-reset', true);
+        const panelAccountMode = getSettingStringSafe(
+            this._settings,
+            'panel-account-mode',
+            'active'
+        );
+        const panelAccountIds = getSettingStrvSafe(
+            this._settings,
+            'panel-account-ids',
+            []
+        );
 
         const alerts = evaluateQuotaNotificationStep(this._bucketStates, report, {
             isInitialHydration: seedOnly,
@@ -108,6 +119,8 @@ export class QuotaNotificationTracker {
             notifyOnWarning,
             notifyOnCritical,
             notifyOnReset,
+            mode: panelAccountMode,
+            accountIds: panelAccountIds,
         });
 
         for (const alert of alerts) {

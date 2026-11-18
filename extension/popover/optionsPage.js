@@ -14,6 +14,7 @@ import {
 import {
     FONT_STYLES,
     METRIC_MODES,
+    PANEL_ACCOUNT_MODES,
     PANEL_MODES,
     POPOVER_LAYOUTS,
     QUICK_THEME_IDS,
@@ -115,11 +116,20 @@ export class QuickOptionsPage {
         // 1. Top Bar Mode
         bodyBox.add_child(this._createSectionLabel(_('Top Bar Mode')));
         this._panelModeToggle = new SegmentedToggle({
-            options: PANEL_MODES,
+            options: PANEL_MODES.map(o => ({id: o.id, label: o.shortLabel || o.label})),
             activeId: this._settings.get_string('panel-mode') || 'icon',
             onChange: id => this._settings.set_string('panel-mode', id),
         });
         bodyBox.add_child(this._panelModeToggle.actor);
+
+        // 1b. Top Bar Accounts
+        bodyBox.add_child(this._createSectionLabel(_('Top bar accounts')));
+        this._panelAccountModeToggle = new SegmentedToggle({
+            options: PANEL_ACCOUNT_MODES.map(o => ({id: o.id, label: o.shortLabel || o.label})),
+            activeId: getSettingStringSafe(this._settings, 'panel-account-mode', 'active'),
+            onChange: id => setSettingStringSafe(this._settings, 'panel-account-mode', id),
+        });
+        bodyBox.add_child(this._panelAccountModeToggle.actor);
 
         // 2. Popover Layout (`list` | `auto-grid` | `grid`)
         bodyBox.add_child(this._createSectionLabel(_('Layout')));
@@ -344,6 +354,11 @@ export class QuickOptionsPage {
 
     syncFromSettings() {
         const panelMode = this._settings.get_string('panel-mode') || 'icon';
+        const panelAccountMode = getSettingStringSafe(
+            this._settings,
+            'panel-account-mode',
+            'active'
+        );
         const layoutMode = getSettingStringSafe(this._settings, 'popover-layout', 'list');
         const rawThemeId = this._settings.get_string('theme') || 'midnight-slate';
         const activeTheme = getThemePalette(rawThemeId);
@@ -352,6 +367,7 @@ export class QuickOptionsPage {
         const autoHide = this._settings.get_boolean('auto-hide-when-empty');
 
         this._panelModeToggle.setActive(panelMode);
+        this._panelAccountModeToggle.setActive(panelAccountMode);
         this._layoutToggle.setActive(layoutMode);
         this._fontToggle.setActive(fontStyle);
         this._metricToggle.setActive(metricMode);
