@@ -11,7 +11,9 @@ import * as PopupMenu from 'resource:///org/gnome/shell/ui/popupMenu.js';
 import {
     _,
     connectSettingChangedSafe,
+    createDesktopInterfaceSettings,
     createHBox,
+    getSettingStringSafe,
     getSettingStrvSafe,
 } from './compat.js';
 import {
@@ -23,6 +25,7 @@ import {
     normalizeStatusReport,
     sortProvidersByOrder,
 } from './format.js';
+import {PopoverTooltipManager} from './popover/widgets.js';
 
 const BUNDLED_ICON_NAMES = new Set([
     'agent-status-symbolic',
@@ -72,6 +75,11 @@ class AgentStatusIndicator extends PanelMenu.Button {
         this._refreshMenuItem = null;
         this._copySummaryMenuItem = null;
         this._settingsMenuItem = null;
+        this._desktopSettings = createDesktopInterfaceSettings();
+        this._pillTooltips = new PopoverTooltipManager({
+            desktopSettings: this._desktopSettings,
+            isMenuOpen: () => !this.menu?.isOpen && !this._contextMenu?.isOpen,
+        });
 
         this._rootBox = createHBox({
             style_class: 'panel-status-menu-box gas-panel-box',
@@ -349,6 +357,8 @@ class AgentStatusIndicator extends PanelMenu.Button {
     _connectSignals() {
         const watchedKeys = [
             'panel-mode',
+            'panel-account-mode',
+            'panel-account-ids',
             'auto-hide-when-empty',
             'font-style',
             'metric-mode',
@@ -379,6 +389,7 @@ class AgentStatusIndicator extends PanelMenu.Button {
                 if (this._destroyed)
                     return;
                 if (isOpen) {
+                    this._pillTooltips?.hide();
                     if (this._contextMenu?.isOpen)
                         this._contextMenu.close(false);
                 } else {
@@ -418,6 +429,7 @@ class AgentStatusIndicator extends PanelMenu.Button {
                     if (this._destroyed)
                         return;
                     if (isOpen) {
+                        this._pillTooltips?.hide();
                         this.add_style_pseudo_class('active');
                     } else {
                         if (!this.menu?.isOpen)
@@ -608,7 +620,20 @@ class AgentStatusIndicator extends PanelMenu.Button {
         const metricMode = this._settings.get_string('metric-mode') === 'remaining'
             ? 'remaining'
             : 'used';
-        const text = formatClipboardSummary(visibleProviders, metricMode, nowEpoch);
+        const accountMode = getSettingStringSafe(
+            this._settings,
+            'panel-account-mode',
+            'active'
+        );
+        const accountIds = getSettingStrvSafe(
+            this._settings,
+            'panel-account-ids',
+            []
+        );
+        const text = formatClipboardSummary(visibleProviders, metricMode, nowEpoch, {
+            mode: accountMode,
+            accountIds,
+        });
 
         try {
             const clipboard = St.Clipboard.get_default?.();
@@ -651,13 +676,27 @@ class AgentStatusIndicator extends PanelMenu.Button {
 
     _syncPanelPresentation() {
         const panelMode = this._settings.get_string('panel-mode') || 'icon';
+        const accountMode = getSettingStringSafe(
+            this._settings,
+            'panel-account-mode',
+            'active'
+        );
+        const accountIds = getSettingStrvSafe(
+            this._settings,
+            'panel-account-ids',
+            []
+        );
         const metricMode = this._settings.get_string('metric-mode') === 'remaining'
             ? 'remaining'
             : 'used';
         const isMonospace = this._settings.get_string('font-style') === 'monospace';
 
         const visibleProviders = this._getVisibleProviders();
-        const summary = computePanelSummary(visibleProviders, metricMode);
+        const summary = computePanelSummary(visibleProviders, metricMode, ' | ', {
+            mode: accountMode,
+            accountIds,
+            panelMode,
+        });
 
         let effectiveSeverity = summary.severity;
         if (this._lastError && !this._lastReport)
@@ -671,17 +710,19 @@ class AgentStatusIndicator extends PanelMenu.Button {
         this._syncPanelLuminanceClass();
         this._updateAutoHideVisibility();
 
-        if (panelMode === 'compact-pills') {
+        if (panelMode === 'compact-pills' || panelMode === 'labeled-pills') {
             this._iconModeBox.hide();
             this._fullTextLabel.hide();
             this._pillsModeBox.show();
-            this._renderCompactPills(summary.pills);
+            this._renderCompactPills(summary.pills, panelMode === 'labeled-pills');
         } else if (panelMode === 'full-text') {
+            this._pillTooltips?.hide();
             this._iconModeBox.hide();
             this._pillsModeBox.hide();
             this._fullTextLabel.show();
-            this._renderFullText(summary, effectiveSeverity, metricMode, visibleProviders);
+            this._renderFullText(summary, effectiveSeverity, metricMode, visibleProviders, accountMode);
         } else {
+            this._pillTooltips?.hide();
             this._pillsModeBox.hide();
             this._fullTextLabel.hide();
             this._iconModeBox.show();
@@ -713,11 +754,19 @@ class AgentStatusIndicator extends PanelMenu.Button {
             const wrap = createHBox({
                 style_class: 'gas-panel-pill',
                 y_align: Clutter.ActorAlign.CENTER,
+                reactive: true,
+                track_hover: true,
             });
             const icon = new St.Icon({
                 icon_size: 14,
                 y_align: Clutter.ActorAlign.CENTER,
                 style_class: 'gas-panel-pill-icon',
+            });
+            const textLabel = new St.Label({
+                text: '',
+                y_align: Clutter.ActorAlign.CENTER,
+                style_class: 'gas-panel-pill-text',
+                visible: false,
             });
             const label = new St.Label({
                 text: '',
@@ -725,29 +774,44 @@ class AgentStatusIndicator extends PanelMenu.Button {
                 style_class: 'gas-panel-pill-label',
             });
             wrap.add_child(icon);
+            wrap.add_child(textLabel);
             wrap.add_child(label);
             this._pillsModeBox.add_child(wrap);
-            this._pillPool.push({wrap, icon, label});
+            const slot = {wrap, icon, textLabel, label, tooltipText: ''};
+            this._pillTooltips?.attach(wrap, () => slot.tooltipText);
+            this._pillPool.push(slot);
         }
         return this._pillPool[index];
     }
 
-    _renderCompactPills(pills) {
+    _renderCompactPills(pills, showText = false) {
         if (!pills || pills.length === 0) {
+            this._pillTooltips?.hide();
             this._pillsEmptyWrap.show();
             this._pillsEmptyLabel.set_text(
                 this._lastError && !this._lastReport ? 'ERR' : (this._hasHydratedOnce ? '—' : '…')
             );
-            for (const slot of this._pillPool)
+            for (const slot of this._pillPool) {
+                slot.tooltipText = '';
                 slot.wrap.hide();
+            }
             return;
         }
+
+        if (showText)
+            this._pillTooltips?.hide();
 
         this._pillsEmptyWrap.hide();
         for (let i = 0; i < pills.length; i++) {
             const item = pills[i];
             const slot = this._ensurePillSlot(i);
             slot.icon.set_gicon(this.getIcon(item.iconName));
+
+            const pillText = showText ? (item.label || '') : '';
+            slot.textLabel.set_text(pillText);
+            slot.textLabel.visible = Boolean(showText && pillText);
+            slot.tooltipText = showText ? '' : (item.tooltip || '');
+
             slot.label.set_text(item.percentText);
             slot.label.remove_style_class_name('is-warning');
             slot.label.remove_style_class_name('is-critical');
@@ -755,18 +819,29 @@ class AgentStatusIndicator extends PanelMenu.Button {
                 slot.label.add_style_class_name('is-critical');
             else if (item.severity === 'warning')
                 slot.label.add_style_class_name('is-warning');
+
+            if (item.isPassive || item.state === 'passive_cached')
+                slot.wrap.add_style_class_name('is-passive');
+            else
+                slot.wrap.remove_style_class_name('is-passive');
+
             slot.wrap.show();
         }
 
-        for (let i = pills.length; i < this._pillPool.length; i++)
+        for (let i = pills.length; i < this._pillPool.length; i++) {
+            this._pillPool[i].tooltipText = '';
             this._pillPool[i].wrap.hide();
+        }
     }
 
-    _renderFullText(summary, severity, metricMode, visibleProviders) {
+    _renderFullText(summary, severity, metricMode, visibleProviders, accountMode = 'active') {
         const rawProviders = this._lastReport?.providers ?? [];
         const isUnmodifiedOrder =
             visibleProviders.length === rawProviders.length &&
             visibleProviders.every((p, idx) => p.id === rawProviders[idx]?.id);
+        const isSingleAccountPerProvider =
+            accountMode === 'active' &&
+            summary.pills.length <= visibleProviders.length;
 
         let text;
         if (!this._hasHydratedOnce) {
@@ -776,7 +851,8 @@ class AgentStatusIndicator extends PanelMenu.Button {
         } else if (
             metricMode === 'used' &&
             this._lastReport?.label &&
-            isUnmodifiedOrder
+            isUnmodifiedOrder &&
+            (rawProviders.length === 0 || isSingleAccountPerProvider)
         ) {
             text = this._lastReport.label;
         } else {
@@ -888,6 +964,9 @@ class AgentStatusIndicator extends PanelMenu.Button {
         this._refreshMenuItem = null;
         this._copySummaryMenuItem = null;
         this._settingsMenuItem = null;
+        this._pillTooltips?.destroy();
+        this._pillTooltips = null;
+        this._desktopSettings = null;
 
         this._iconCache.clear();
         this._pillPool = [];

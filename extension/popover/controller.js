@@ -125,6 +125,7 @@ export class PopoverController {
         });
 
         this._detailPage = new ProviderDetailPage({
+            settings: this._settings,
             getIcon,
             isMenuOpen,
             tooltips: this._tooltips,
@@ -248,6 +249,8 @@ export class PopoverController {
     _connectSettings() {
         const watchedKeys = [
             'panel-mode',
+            'panel-account-mode',
+            'panel-account-ids',
             'auto-hide-when-empty',
             'density-mode',
             'theme',
@@ -642,12 +645,24 @@ export class PopoverController {
         if (this._activePageName === 'detail') {
             const target = allProviders.find(p => p.id === this._selectedProviderId);
             if (target) {
+                const panelAccountMode = getSettingStringSafe(
+                    this._settings,
+                    'panel-account-mode',
+                    'active'
+                );
+                const panelAccountIds = getSettingStrvSafe(
+                    this._settings,
+                    'panel-account-ids',
+                    []
+                );
                 this._detailPage.update({
                     provider: target,
                     reportUpdatedEpoch: this._report?.updated_at_epoch || 0,
                     metricMode,
                     themeId: cairoThemeId,
                     nowEpoch,
+                    panelAccountMode,
+                    panelAccountIds,
                 });
             } else if (this._report) {
                 this.navigateTo('main', {animate: false});

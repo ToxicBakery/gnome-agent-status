@@ -4,7 +4,19 @@
     <key name="panel-mode" type="s">
       <default>'icon'</default>
       <summary>Top bar indicator display mode</summary>
-      <description>Selects how usage appears in the top panel: 'icon', 'compact-pills', or 'full-text'.</description>
+      <description>Selects how usage appears in the top panel: 'icon', 'compact-pills', 'labeled-pills', or 'full-text'.</description>
+    </key>
+
+    <key name="panel-account-mode" type="s">
+      <default>'active'</default>
+      <summary>Top bar account display mode</summary>
+      <description>Selects which accounts appear in the top panel: 'active', 'all', or 'selected'.</description>
+    </key>
+
+    <key name="panel-account-ids" type="as">
+      <default>[]</default>
+      <summary>Selected account IDs for the top bar</summary>
+      <description>List of account IDs that appear in the top panel when panel-account-mode is 'selected'.</description>
     </key>
 
     <key name="panel-box" type="s">

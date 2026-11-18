@@ -998,3 +998,31 @@ msgstr ""
 #: extension/format.js
 msgid "Updated %s ago"
 msgstr ""
+
+#: extension/format.js
+msgid "Pills with text"
+msgstr ""
+
+#: extension/format.js
+msgid "Active account only"
+msgstr ""
+
+#: extension/format.js
+msgid "All accounts"
+msgstr ""
+
+#: extension/format.js
+msgid "Selected accounts"
+msgstr ""
+
+#: extension/popover/optionsPage.js extension/prefs.js
+msgid "Top bar accounts"
+msgstr ""
+
+#: extension/prefs.js
+msgid "Show the active account only, all accounts, or selected accounts in the top bar"
+msgstr ""
+
+#: extension/popover/detailPage.js
+msgid "Show in top bar"
+msgstr ""

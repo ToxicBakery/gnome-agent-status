@@ -5,6 +5,13 @@ All notable changes to `gnome-agent-status` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Top bar support for multiple accounts of the same provider through `panel-account-mode` (`'active'`, `'all'`, `'selected'`) and `panel-account-ids`.
+- New `labeled-pills` value (`Pills with text`) for `panel-mode`, account tooltips for `compact-pills`, and quota alerts for all accounts shown in the top bar.
+
 ## [0.2.0] - 2026-11-15
 
 ### Added
