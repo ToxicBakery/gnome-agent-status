@@ -146,7 +146,7 @@ export const PREFS_PROVIDERS = Object.freeze((() => {
             null;
         const fallback = FALLBACK_SPEC_BY_ID[id] ?? null;
         return Object.freeze({
-            ...(fromFormat ?? {}),
+            ...fromFormat,
             id,
             displayName:
                 fallback?.displayName ||
@@ -999,7 +999,7 @@ export class PrefsCliRunner {
         } catch (e) {
             this.releaseCancellable(cancellable);
             this._resolvedBin = null;
-            throw new Error(`Unable to execute ${bin}: ${e.message}`);
+            throw new Error(`Unable to execute ${bin}: ${e.message}`, {cause: e});
         }
 
         this._activeProcs.add(proc);
